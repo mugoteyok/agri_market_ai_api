@@ -50,7 +50,6 @@ async def create_order(order: OrderCreate):
 
     if not product:
 
-
         raise HTTPException(
 
             status_code=404,
@@ -61,9 +60,7 @@ async def create_order(order: OrderCreate):
 
 
 
-
-    # Calculate order total
-
+    # Calculate order amount
 
     total_amount = (
 
@@ -75,7 +72,6 @@ async def create_order(order: OrderCreate):
 
 
 
-
     new_order = {
 
 
@@ -84,11 +80,9 @@ async def create_order(order: OrderCreate):
         order.buyer_id,
 
 
-
         "farmer_id":
 
         product["farmer_id"],
-
 
 
         "product_id":
@@ -96,11 +90,9 @@ async def create_order(order: OrderCreate):
         order.product_id,
 
 
-
         "quantity":
 
         order.quantity,
-
 
 
         "amount":
@@ -108,11 +100,9 @@ async def create_order(order: OrderCreate):
         total_amount,
 
 
-
         "status":
 
         "pending",
-
 
 
         "created_at":
@@ -120,7 +110,6 @@ async def create_order(order: OrderCreate):
         datetime.utcnow().isoformat()
 
     }
-
 
 
 
@@ -138,14 +127,12 @@ async def create_order(order: OrderCreate):
 
 
 
-
     return {
 
 
         "message":
 
         "Order created successfully",
-
 
 
         "order":
@@ -165,7 +152,7 @@ async def create_order(order: OrderCreate):
 
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
-    farmer_id:str
+    farmer_id: str
 ):
 
 
@@ -212,7 +199,7 @@ async def farmer_orders(
 
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
-    buyer_id:str
+    buyer_id: str
 ):
 
 
@@ -253,16 +240,239 @@ async def buyer_orders(
 
 
 # =====================================
-# UPDATE ORDER STATUS
+# COMPLETE ORDER AND PAY FARMER
+# =====================================
+
+
+@router.put("/orders/{order_id}/complete")
+async def complete_order(
+    order_id: str
+):
+
+
+    # Get order details
+
+    order_response = (
+
+        supabase
+
+        .table("orders")
+
+        .select("*")
+
+        .eq(
+
+            "id",
+
+            order_id
+
+        )
+
+        .single()
+
+        .execute()
+
+    )
+
+
+
+    order = order_response.data
+
+
+
+    if not order:
+
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Order not found"
+
+        )
+
+
+
+    # Update order status
+
+
+    supabase.table("orders").update({
+
+        "status":
+
+        "completed"
+
+    }).eq(
+
+        "id",
+
+        order_id
+
+    ).execute()
+
+
+
+
+
+    # Create transaction record
+
+
+    transaction = {
+
+
+        "farmer_id":
+
+        order["farmer_id"],
+
+
+        "amount":
+
+        order["amount"],
+
+
+        "type":
+
+        "sale",
+
+
+        "created_at":
+
+        datetime.utcnow().isoformat()
+
+    }
+
+
+
+    supabase.table("transactions").insert(
+
+        transaction
+
+    ).execute()
+
+
+
+
+
+    # Get farmer wallet
+
+
+    wallet_response = (
+
+        supabase
+
+        .table("wallets")
+
+        .select("*")
+
+        .eq(
+
+            "farmer_id",
+
+            order["farmer_id"]
+
+        )
+
+        .single()
+
+        .execute()
+
+    )
+
+
+
+
+
+    if wallet_response.data:
+
+
+        current_balance = (
+
+            wallet_response.data.get("balance")
+
+            or 0
+
+        )
+
+
+
+        new_balance = (
+
+            current_balance +
+
+            order["amount"]
+
+        )
+
+
+
+        supabase.table("wallets").update({
+
+            "balance":
+
+            new_balance
+
+        }).eq(
+
+            "farmer_id",
+
+            order["farmer_id"]
+
+        ).execute()
+
+
+
+
+    else:
+
+
+        # Create wallet if missing
+
+
+        supabase.table("wallets").insert({
+
+            "farmer_id":
+
+            order["farmer_id"],
+
+
+            "balance":
+
+            order["amount"]
+
+        }).execute()
+
+
+
+
+    return {
+
+
+        "message":
+
+        "Order completed and farmer paid",
+
+
+        "amount":
+
+        order["amount"]
+
+    }
+
+
+
+
+
+# =====================================
+# UPDATE ORDER STATUS MANUALLY
 # =====================================
 
 
 @router.put("/orders/{order_id}")
 async def update_order(
 
-    order_id:str,
+    order_id: str,
 
-    status:str
+    status: str
 
 ):
 
@@ -275,7 +485,9 @@ async def update_order(
 
         .update({
 
-            "status": status
+            "status":
+
+            status
 
         })
 
@@ -299,7 +511,6 @@ async def update_order(
         "message":
 
         "Order status updated",
-
 
 
         "order":
