@@ -1,14 +1,23 @@
 import joblib
 import pandas as pd
+import os
 
+
+MODEL_PATH = "models/price_model.pkl"
+
+
+# Load AI model
+
+if not os.path.exists(MODEL_PATH):
+
+    raise Exception(
+        "price_model.pkl not found. Train model first."
+    )
 
 
 model_data = joblib.load(
-
-    "models/price_model.pkl"
-
+    MODEL_PATH
 )
-
 
 
 model = model_data["model"]
@@ -21,38 +30,47 @@ demand_encoder = model_data["demand_encoder"]
 
 
 
-
-def predict_price(
-    crop,
-    region,
-    month,
-    rainfall,
-    demand
+def predict_market_price(
+    crop: str,
+    region: str,
+    month: int,
+    rainfall: float,
+    demand: str
 ):
+
+
+    # Encode farmer inputs
+
+    crop_value = crop_encoder.transform(
+        [crop]
+    )[0]
+
+
+    region_value = region_encoder.transform(
+        [region]
+    )[0]
+
+
+    demand_value = demand_encoder.transform(
+        [demand]
+    )[0]
+
 
 
     input_data = pd.DataFrame([{
 
-        "crop":
-        crop_encoder.transform([crop])[0],
+        "crop": crop_value,
 
+        "region": region_value,
 
-        "region":
-        region_encoder.transform([region])[0],
+        "month": month,
 
+        "rainfall": rainfall,
 
-        "month":
-        month,
-
-
-        "rainfall":
-        rainfall,
-
-
-        "demand":
-        demand_encoder.transform([demand])[0]
+        "demand": demand_value
 
     }])
+
 
 
     prediction = model.predict(
@@ -60,33 +78,8 @@ def predict_price(
     )
 
 
+
     return round(
-        prediction[0],
+        float(prediction[0]),
         2
-    )
-
-
-
-# Test
-
-if __name__=="__main__":
-
-    price = predict_price(
-
-        "Coffee",
-
-        "Central",
-
-        8,
-
-        100,
-
-        "High"
-
-    )
-
-
-    print(
-        "Predicted price:",
-        price
     )
