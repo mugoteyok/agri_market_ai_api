@@ -1,66 +1,57 @@
 from fastapi import APIRouter
-import joblib
-import pandas as pd
+from pydantic import BaseModel
+
+from ml.predict_price import predict_market_price
 
 
 router = APIRouter()
 
 
 
-# Load ML model
+class ForecastRequest(BaseModel):
 
-model = joblib.load(
-    "models/price_model.pkl"
-)
+    crop: str
 
+    region: str
 
+    month: int
 
-@router.post("/forecast")
+    rainfall: float
 
-async def predict_price(data:dict):
-
-
-    features=pd.DataFrame([{
-
-        "crop":
-        data["crop"],
-
-
-        "month":
-        data["month"],
-
-
-        "region":
-        data["region"],
-
-
-        "rainfall":
-        data["rainfall"]
-
-    }])
+    demand: str
 
 
 
-    prediction=model.predict(
-        features
+
+@router.post("/")
+def forecast_price(
+    data: ForecastRequest
+):
+
+
+    price = predict_market_price(
+
+        crop=data.crop,
+
+        region=data.region,
+
+        month=data.month,
+
+        rainfall=data.rainfall,
+
+        demand=data.demand
+
     )
-
 
 
     return {
 
+        "crop": data.crop,
 
-        "crop":
-        data["crop"],
+        "region": data.region,
 
+        "predicted_price": price,
 
-        "predicted_price":
-
-        float(prediction[0]),
-
-
-        "message":
-
-        "AI forecast generated"
+        "currency": "UGX/kg"
 
     }
