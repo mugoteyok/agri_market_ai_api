@@ -1,28 +1,36 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
 
+
+
+# =====================================
+# WALLET CREATION / EARNINGS
+# =====================================
 
 class WalletCreate(BaseModel):
 
     farmer_id: str
 
+    amount: float = Field(
+        default=0,
+        ge=0,
+        description="Wallet amount"
+    )
 
 
-class WalletResponse(BaseModel):
 
-    id: str
-
-    farmer_id: str
-
-    balance: float
-
-
+# =====================================
+# WITHDRAWAL REQUEST
+# =====================================
 
 class WithdrawalCreate(BaseModel):
 
     farmer_id: str
 
-    amount: float
+    amount: float = Field(
+        ...,
+        gt=0,
+        description="Amount to withdraw"
+    )
 
     mobile_number: str
 
