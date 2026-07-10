@@ -1,38 +1,59 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
 from database import supabase
+
+from schemas.wallet import (
+    WalletCreate,
+    WithdrawalCreate
+)
+
 from datetime import datetime
+
 
 
 router = APIRouter()
 
 
 
-# ===============================
+# =====================================
 # GET FARMER WALLET
-# ===============================
+# =====================================
 
 
 @router.get("/wallet/{farmer_id}")
-
 async def get_wallet(
-    farmer_id:str
+    farmer_id: str
 ):
 
-
-    response=(
+    response = (
 
         supabase
+
         .table("wallets")
+
         .select("*")
+
         .eq(
             "farmer_id",
             farmer_id
         )
+
         .single()
 
         .execute()
 
     )
+
+
+    if not response.data:
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Wallet not found"
+
+        )
 
 
     return response.data
@@ -41,53 +62,52 @@ async def get_wallet(
 
 
 
-# ===============================
-# ADD EARNINGS
-# ===============================
+# =====================================
+# CREATE FARMER WALLET
+# =====================================
 
 
-@router.post("/wallet/earn")
+@router.post("/wallet/create")
+async def create_wallet(
+    wallet: WalletCreate
+):
 
-async def add_money(data:dict):
 
-
-    transaction={
-
+    new_wallet = {
 
         "farmer_id":
-        data["farmer_id"],
+        wallet.farmer_id,
 
 
-        "amount":
-        data["amount"],
-
-
-        "type":
-        "sale",
-
-
-        "created_at":
-        datetime.utcnow()
+        "balance":
+        wallet.amount
 
     }
 
 
-    response=(
+
+    response = (
 
         supabase
-        .table("transactions")
-        .insert(transaction)
+
+        .table("wallets")
+
+        .insert(new_wallet)
+
         .execute()
 
     )
 
 
+
     return {
 
-        "message":
-        "Payment received",
 
-        "data":
+        "message":
+        "Wallet created successfully",
+
+
+        "wallet":
         response.data
 
     }
@@ -96,46 +116,189 @@ async def add_money(data:dict):
 
 
 
-# ===============================
-# WITHDRAW MONEY
-# ===============================
+# =====================================
+# ADD FARMER EARNINGS
+# =====================================
 
 
-@router.post("/wallet/withdraw")
+@router.post("/wallet/earn")
+async def add_money(
+    data: WalletCreate
+):
 
-async def withdraw(data:dict):
 
+    # Add transaction record
 
-    withdrawal={
+    transaction = {
 
 
         "farmer_id":
-        data["farmer_id"],
+        data.farmer_id,
 
 
         "amount":
-        data["amount"],
+        data.amount,
 
 
-        "phone":
-        data["phone"],
+        "type":
+        "sale",
 
 
-        "provider":
-        data["provider"],
-
-
-        "status":
-        "processing"
+        "created_at":
+        datetime.utcnow().isoformat()
 
     }
 
 
 
-    response=(
+    transaction_response = (
 
         supabase
+
+        .table("transactions")
+
+        .insert(transaction)
+
+        .execute()
+
+    )
+
+
+
+
+    # Update wallet balance
+
+    wallet_response = (
+
+        supabase
+
+        .table("wallets")
+
+        .select("balance")
+
+        .eq(
+            "farmer_id",
+            data.farmer_id
+        )
+
+        .single()
+
+        .execute()
+
+    )
+
+
+
+    if wallet_response.data:
+
+
+        current_balance = (
+
+            wallet_response.data["balance"]
+
+            or 0
+
+        )
+
+
+        new_balance = (
+
+            current_balance +
+
+            data.amount
+
+        )
+
+
+
+        supabase.table("wallets").update({
+
+            "balance":
+            new_balance
+
+        }).eq(
+
+            "farmer_id",
+
+            data.farmer_id
+
+        ).execute()
+
+
+
+
+
+    return {
+
+
+        "message":
+
+        "Payment received and wallet updated",
+
+
+        "transaction":
+
+        transaction_response.data
+
+    }
+
+
+
+
+
+# =====================================
+# WITHDRAW MONEY
+# =====================================
+
+
+@router.post("/wallet/withdraw")
+async def withdraw(
+    data: WithdrawalCreate
+):
+
+
+    withdrawal = {
+
+
+        "farmer_id":
+
+        data.farmer_id,
+
+
+        "amount":
+
+        data.amount,
+
+
+        "phone":
+
+        data.mobile_number,
+
+
+        "provider":
+
+        data.network,
+
+
+        "status":
+
+        "processing",
+
+
+        "created_at":
+
+        datetime.utcnow().isoformat()
+
+    }
+
+
+
+    response = (
+
+        supabase
+
         .table("withdrawals")
+
         .insert(withdrawal)
 
         .execute()
@@ -152,8 +315,8 @@ async def withdraw(data:dict):
         "Withdrawal request submitted",
 
 
-        "data":
+        "withdrawal":
 
         response.data
 
-  }
+    }
