@@ -1,57 +1,85 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
+
+from schemas.forecast import ForecastRequest
 
 from ml.predict_price import predict_market_price
+
 
 
 router = APIRouter()
 
 
 
-class ForecastRequest(BaseModel):
 
-    crop: str
-
-    region: str
-
-    month: int
-
-    rainfall: float
-
-    demand: str
+# =====================================
+# AI MARKET PRICE FORECAST
+# =====================================
 
 
-
-
-@router.post("/")
+@router.post("/forecast")
 def forecast_price(
     data: ForecastRequest
 ):
 
 
-    price = predict_market_price(
-
-        crop=data.crop,
-
-        region=data.region,
-
-        month=data.month,
-
-        rainfall=data.rainfall,
-
-        demand=data.demand
-
-    )
+    try:
 
 
-    return {
+        price = predict_market_price(
 
-        "crop": data.crop,
+            crop=data.crop,
 
-        "region": data.region,
+            region=data.region,
 
-        "predicted_price": price,
+            month=data.month,
 
-        "currency": "UGX/kg"
+            rainfall=data.rainfall,
 
-    }
+            demand=data.demand
+
+        )
+
+
+
+        return {
+
+
+            "crop":
+
+            data.crop,
+
+
+            "region":
+
+            data.region,
+
+
+            "predicted_price":
+
+            price,
+
+
+            "currency":
+
+            "UGX/kg",
+
+
+            "message":
+
+            "AI price prediction generated"
+
+        }
+
+
+
+    except Exception as e:
+
+
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
+        )
