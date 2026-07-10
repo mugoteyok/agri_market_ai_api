@@ -2,7 +2,7 @@ fastapi
 uvicorn
 supabase
 python-dotenv
-
+pydantic
 pandas
 numpy
 scikit-learn
