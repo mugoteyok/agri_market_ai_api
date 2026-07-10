@@ -1,0 +1,11 @@
+crop,region,month,rainfall,demand,price
+Coffee,Central,1,120,High,12000
+Coffee,Central,2,100,High,12500
+Coffee,Eastern,3,80,Medium,11500
+Maize,Central,1,90,Medium,1500
+Maize,Northern,2,70,High,1700
+Beans,Western,1,110,High,3200
+Beans,Eastern,4,60,Medium,2800
+Coffee,Central,5,150,High,13500
+Maize,Northern,6,200,High,1900
+Beans,Western,7,140,Medium,3500
