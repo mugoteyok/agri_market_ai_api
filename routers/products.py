@@ -1,75 +1,133 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+
 from database import supabase
+
+from schemas.product import ProductCreate
+
 from datetime import datetime
+
 
 
 router = APIRouter()
 
 
-# ===============================
+
+
+
+# =====================================
 # CREATE PRODUCT LISTING
-# ===============================
+# =====================================
+
 
 @router.post("/products")
-async def create_product(data: dict):
+async def create_product(
+    product: ProductCreate
+):
 
-    product = {
 
-        "farmer_id": data["farmer_id"],
+    product_data = {
 
-        "crop": data["crop"],
 
-        "description": data.get(
-            "description",
-            ""
-        ),
+        "farmer_id":
 
-        "quantity": data["quantity"],
+        product.farmer_id,
 
-        "unit": data.get(
-            "unit",
-            "kg"
-        ),
 
-        "price_per_unit": data["price_per_unit"],
 
-        "region": data["region"],
+        "crop":
 
-        "image_url": data.get(
-            "image_url",
-            None
-        ),
+        product.crop,
 
-        "status": "available",
 
-        "created_at": datetime.utcnow().isoformat()
+
+        "description":
+
+        product.description,
+
+
+
+        "quantity":
+
+        product.quantity,
+
+
+
+        "unit":
+
+        product.unit,
+
+
+
+        "price_per_unit":
+
+        product.price_per_unit,
+
+
+
+        "region":
+
+        product.region,
+
+
+
+        "image_url":
+
+        product.image_url,
+
+
+
+        "status":
+
+        "available",
+
+
+
+        "created_at":
+
+        datetime.utcnow().isoformat()
 
     }
 
 
+
+
     response = (
+
         supabase
+
         .table("products")
-        .insert(product)
+
+        .insert(product_data)
+
         .execute()
+
     )
+
 
 
     return {
 
+
         "message":
+
         "Product listed successfully",
 
+
+
         "product":
+
         response.data
 
     }
 
 
 
-# ===============================
-# GET ALL PRODUCTS
-# ===============================
+
+
+# =====================================
+# GET ALL MARKETPLACE PRODUCTS
+# =====================================
+
 
 @router.get("/products")
 async def get_products():
@@ -78,47 +136,198 @@ async def get_products():
     response = (
 
         supabase
+
         .table("products")
+
         .select("*")
+
         .eq(
+
             "status",
+
             "available"
+
         )
+
         .order(
+
             "created_at",
+
             desc=True
+
         )
+
         .execute()
 
     )
+
 
 
     return response.data
 
 
 
-# ===============================
-# FARMER PRODUCTS
-# ===============================
+
+
+# =====================================
+# GET PRODUCTS BY FARMER
+# =====================================
+
 
 @router.get("/products/farmer/{farmer_id}")
 async def farmer_products(
-    farmer_id:str
+
+    farmer_id: str
+
 ):
 
 
     response = (
 
         supabase
+
         .table("products")
+
         .select("*")
+
         .eq(
+
             "farmer_id",
+
             farmer_id
+
         )
+
+        .order(
+
+            "created_at",
+
+            desc=True
+
+        )
+
         .execute()
 
     )
 
 
+
     return response.data
+
+
+
+
+
+# =====================================
+# GET SINGLE PRODUCT
+# =====================================
+
+
+@router.get("/products/{product_id}")
+async def get_product(
+
+    product_id: str
+
+):
+
+
+    response = (
+
+        supabase
+
+        .table("products")
+
+        .select("*")
+
+        .eq(
+
+            "id",
+
+            product_id
+
+        )
+
+        .single()
+
+        .execute()
+
+    )
+
+
+
+    if not response.data:
+
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Product not found"
+
+        )
+
+
+
+    return response.data
+
+
+
+
+
+# =====================================
+# UPDATE PRODUCT STATUS
+# =====================================
+
+
+@router.put("/products/{product_id}/status")
+async def update_product_status(
+
+    product_id: str,
+
+    status: str
+
+):
+
+
+    response = (
+
+        supabase
+
+        .table("products")
+
+        .update({
+
+            "status":
+
+            status
+
+        })
+
+        .eq(
+
+            "id",
+
+            product_id
+
+        )
+
+        .execute()
+
+    )
+
+
+
+    return {
+
+
+        "message":
+
+        "Product status updated",
+
+
+
+        "product":
+
+        response.data
+
+        }
