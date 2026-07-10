@@ -19,13 +19,30 @@ async def create_product(data: dict):
 
         "crop": data["crop"],
 
+        "description": data.get(
+            "description",
+            ""
+        ),
+
         "quantity": data["quantity"],
 
-        "price_per_kg": data["price_per_kg"],
+        "unit": data.get(
+            "unit",
+            "kg"
+        ),
 
-        "location": data["location"],
+        "price_per_unit": data["price_per_unit"],
 
-        "created_at": datetime.utcnow()
+        "region": data["region"],
+
+        "image_url": data.get(
+            "image_url",
+            None
+        ),
+
+        "status": "available",
+
+        "created_at": datetime.utcnow().isoformat()
 
     }
 
@@ -40,9 +57,11 @@ async def create_product(data: dict):
 
     return {
 
-        "message":"Product listed successfully",
+        "message":
+        "Product listed successfully",
 
-        "product":response.data
+        "product":
+        response.data
 
     }
 
@@ -61,6 +80,10 @@ async def get_products():
         supabase
         .table("products")
         .select("*")
+        .eq(
+            "status",
+            "available"
+        )
         .order(
             "created_at",
             desc=True
@@ -79,10 +102,12 @@ async def get_products():
 # ===============================
 
 @router.get("/products/farmer/{farmer_id}")
-async def farmer_products(farmer_id:str):
+async def farmer_products(
+    farmer_id:str
+):
 
 
-    response=(
+    response = (
 
         supabase
         .table("products")
