@@ -21,7 +21,6 @@ async def create_order(
     order: OrderCreate
 ):
 
-    # Get product details
 
     product_response = (
 
@@ -55,8 +54,6 @@ async def create_order(
     product = product_response.data[0]
 
 
-
-    # Calculate total amount
 
     total_amount = (
 
@@ -99,6 +96,11 @@ async def create_order(
         "payment_status":
 
         "pending",
+
+
+        "order_status":
+
+        "placed",
 
 
         "status":
@@ -292,17 +294,26 @@ async def complete_order(
 
 
 
+
     # Update order status
 
     supabase.table("orders").update({
+
 
         "status":
 
         "completed",
 
+
+        "order_status":
+
+        "completed",
+
+
         "payment_status":
 
         "paid"
+
 
     }).eq(
 
@@ -354,7 +365,7 @@ async def complete_order(
 
 
 
-    # Get wallet
+    # Get farmer wallet
 
     wallet_response = (
 
@@ -386,26 +397,37 @@ async def complete_order(
         wallet = wallet_response.data[0]
 
 
-        new_balance = (
+        current_balance = (
 
             wallet["balance"]
 
-            +
+            or 0
+
+        )
+
+
+        new_balance = (
+
+            current_balance +
 
             order["total_amount"]
 
         )
 
 
+
         supabase.table("wallets").update({
+
 
             "balance":
 
             new_balance,
 
+
             "updated_at":
 
             datetime.utcnow().isoformat()
+
 
         }).eq(
 
@@ -417,10 +439,12 @@ async def complete_order(
 
 
 
+
     else:
 
 
         supabase.table("wallets").insert({
+
 
             "farmer_id":
 
@@ -441,6 +465,7 @@ async def complete_order(
 
             datetime.utcnow().isoformat()
 
+
         }).execute()
 
 
@@ -458,6 +483,7 @@ async def complete_order(
         "amount":
 
         order["total_amount"]
+
 
     }
 
@@ -487,9 +513,11 @@ async def update_order(
 
         .update({
 
+
             "status":
 
             status
+
 
         })
 
@@ -504,7 +532,6 @@ async def update_order(
         .execute()
 
     )
-
 
 
     return {
