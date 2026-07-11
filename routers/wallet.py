@@ -22,7 +22,6 @@ router = APIRouter()
 # GET /api/marketplace/wallet/{farmer_id}
 # =====================================
 
-
 @router.get("/wallet/{farmer_id}")
 async def get_wallet(
 
@@ -47,7 +46,51 @@ async def get_wallet(
 
         )
 
-        .single()
+        .execute()
+
+    )
+
+
+
+    # Wallet exists
+
+    if response.data:
+
+
+        return response.data[0]
+
+
+
+    # Create wallet automatically
+
+    new_wallet = {
+
+
+        "farmer_id":
+
+        farmer_id,
+
+
+        "balance":
+
+        0,
+
+
+        "currency":
+
+        "UGX"
+
+    }
+
+
+
+    created_wallet = (
+
+        supabase
+
+        .table("wallets")
+
+        .insert(new_wallet)
 
         .execute()
 
@@ -55,20 +98,11 @@ async def get_wallet(
 
 
 
-    if not response.data:
-
-
-        raise HTTPException(
-
-            status_code=404,
-
-            detail="Wallet not found"
-
-        )
+    return created_wallet.data[0]
 
 
 
-    return response.data
+
 
 
 
@@ -79,13 +113,57 @@ async def get_wallet(
 # POST /api/marketplace/wallet/create
 # =====================================
 
-
 @router.post("/wallet/create")
 async def create_wallet(
 
     wallet: WalletCreate
 
 ):
+
+
+    # Check if wallet already exists
+
+    existing = (
+
+        supabase
+
+        .table("wallets")
+
+        .select("*")
+
+        .eq(
+
+            "farmer_id",
+
+            wallet.farmer_id
+
+        )
+
+        .execute()
+
+    )
+
+
+
+    if existing.data:
+
+
+        return {
+
+
+            "message":
+
+            "Wallet already exists",
+
+
+            "wallet":
+
+            existing.data[0]
+
+        }
+
+
+
 
 
     new_wallet = {
@@ -98,7 +176,12 @@ async def create_wallet(
 
         "balance":
 
-        wallet.amount
+        wallet.amount,
+
+
+        "currency":
+
+        "UGX"
 
     }
 
@@ -128,9 +211,13 @@ async def create_wallet(
 
         "wallet":
 
-        response.data
+        response.data[0]
 
     }
+
+
+
+
 
 
 
@@ -141,7 +228,6 @@ async def create_wallet(
 # POST /api/marketplace/wallet/earn
 # =====================================
 
-
 @router.post("/wallet/earn")
 async def add_money(
 
@@ -150,7 +236,7 @@ async def add_money(
 ):
 
 
-    # Create transaction record
+    # Add transaction record
 
     transaction = {
 
@@ -175,6 +261,7 @@ async def add_money(
         datetime.utcnow().isoformat()
 
     }
+
 
 
 
@@ -212,8 +299,6 @@ async def add_money(
 
         )
 
-        .single()
-
         .execute()
 
     )
@@ -225,20 +310,24 @@ async def add_money(
     if wallet_response.data:
 
 
+        wallet = wallet_response.data[0]
+
+
         current_balance = (
 
-            wallet_response.data.get("balance")
+            wallet.get("balance")
 
             or 0
 
         )
 
 
+
         new_balance = (
 
-            current_balance +
+            current_balance
 
-            data.amount
+            + data.amount
 
         )
 
@@ -246,26 +335,38 @@ async def add_money(
 
         supabase.table("wallets").update({
 
+
             "balance":
 
-            new_balance
+            new_balance,
+
+
+            "updated_at":
+
+            datetime.utcnow().isoformat()
+
 
         }).eq(
+
 
             "farmer_id",
 
             data.farmer_id
 
+
         ).execute()
+
 
 
 
     else:
 
 
-        # Create wallet automatically
+
+        # Create wallet if missing
 
         supabase.table("wallets").insert({
+
 
             "farmer_id":
 
@@ -274,7 +375,12 @@ async def add_money(
 
             "balance":
 
-            data.amount
+            data.amount,
+
+
+            "currency":
+
+            "UGX"
 
         }).execute()
 
@@ -290,6 +396,7 @@ async def add_money(
         "Payment received and wallet updated",
 
 
+
         "transaction":
 
         transaction_response.data
@@ -300,11 +407,14 @@ async def add_money(
 
 
 
+
+
+
+
 # =====================================
 # WITHDRAW MONEY
 # POST /api/marketplace/wallet/withdraw
 # =====================================
-
 
 @router.post("/wallet/withdraw")
 async def withdraw(
@@ -312,6 +422,68 @@ async def withdraw(
     data: WithdrawalCreate
 
 ):
+
+
+    # Check wallet balance
+
+    wallet_response = (
+
+        supabase
+
+        .table("wallets")
+
+        .select("*")
+
+        .eq(
+
+            "farmer_id",
+
+            data.farmer_id
+
+        )
+
+        .execute()
+
+    )
+
+
+
+    if not wallet_response.data:
+
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Wallet not found"
+
+        )
+
+
+
+
+    wallet = wallet_response.data[0]
+
+
+
+    balance = wallet.get("balance") or 0
+
+
+
+
+    if data.amount > balance:
+
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Insufficient wallet balance"
+
+        )
+
+
+
 
 
     withdrawal = {
@@ -365,12 +537,48 @@ async def withdraw(
 
 
 
+
+
+    # Deduct balance
+
+    new_balance = balance - data.amount
+
+
+
+    supabase.table("wallets").update({
+
+
+        "balance":
+
+        new_balance,
+
+
+        "updated_at":
+
+        datetime.utcnow().isoformat()
+
+
+    }).eq(
+
+
+        "farmer_id",
+
+        data.farmer_id
+
+
+    ).execute()
+
+
+
+
+
     return {
 
 
         "message":
 
         "Withdrawal request submitted",
+
 
 
         "withdrawal":
