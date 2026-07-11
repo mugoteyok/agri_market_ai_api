@@ -12,6 +12,7 @@ from routers.wallet import router as wallet_router
 
 
 
+
 # =====================================
 # CREATE FASTAPI APP
 # =====================================
@@ -28,11 +29,12 @@ app = FastAPI(
 
 
 
+
 # =====================================
 # API ROUTERS
-# Base URL:
-/api/marketplace
+# Base URL: /api/marketplace
 # =====================================
+
 
 app.include_router(
 
@@ -82,9 +84,12 @@ app.include_router(
 
 
 
+
+
 # =====================================
 # HEALTH CHECK
 # =====================================
+
 
 @app.get("/")
 def home():
@@ -92,10 +97,14 @@ def home():
     return {
 
         "message":
+
         "Agri Market AI Backend Running",
 
+
         "status":
+
         "healthy",
+
 
         "services": [
 
