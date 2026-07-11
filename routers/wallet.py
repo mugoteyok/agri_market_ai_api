@@ -52,16 +52,12 @@ async def get_wallet(
 
 
 
-    # Wallet exists
-
     if response.data:
 
 
         return response.data[0]
 
 
-
-    # Create wallet automatically
 
     new_wallet = {
 
@@ -97,9 +93,7 @@ async def get_wallet(
     )
 
 
-
     return created_wallet.data[0]
-
 
 
 
@@ -120,8 +114,6 @@ async def create_wallet(
 
 ):
 
-
-    # Check if wallet already exists
 
     existing = (
 
@@ -236,8 +228,6 @@ async def add_money(
 ):
 
 
-    # Add transaction record
-
     transaction = {
 
 
@@ -265,6 +255,7 @@ async def add_money(
 
 
 
+
     transaction_response = (
 
         supabase
@@ -280,8 +271,6 @@ async def add_money(
 
 
 
-
-    # Get wallet
 
     wallet_response = (
 
@@ -362,9 +351,6 @@ async def add_money(
     else:
 
 
-
-        # Create wallet if missing
-
         supabase.table("wallets").insert({
 
 
@@ -424,8 +410,6 @@ async def withdraw(
 ):
 
 
-    # Check wallet balance
-
     wallet_response = (
 
         supabase
@@ -462,11 +446,12 @@ async def withdraw(
 
 
 
+
     wallet = wallet_response.data[0]
 
 
-
     balance = wallet.get("balance") or 0
+
 
 
 
@@ -481,6 +466,7 @@ async def withdraw(
             detail="Insufficient wallet balance"
 
         )
+
 
 
 
@@ -523,6 +509,7 @@ async def withdraw(
 
 
 
+
     response = (
 
         supabase
@@ -539,9 +526,9 @@ async def withdraw(
 
 
 
-    # Deduct balance
-
     new_balance = balance - data.amount
+
+
 
 
 
@@ -586,3 +573,55 @@ async def withdraw(
         response.data
 
     }
+
+
+
+
+
+
+
+
+
+# =====================================
+# GET FARMER TRANSACTIONS
+# GET /api/marketplace/transactions/{farmer_id}
+# =====================================
+
+@router.get("/transactions/{farmer_id}")
+async def farmer_transactions(
+
+    farmer_id: str
+
+):
+
+
+    response = (
+
+        supabase
+
+        .table("transactions")
+
+        .select("*")
+
+        .eq(
+
+            "farmer_id",
+
+            farmer_id
+
+        )
+
+        .order(
+
+            "created_at",
+
+            desc=True
+
+        )
+
+        .execute()
+
+    )
+
+
+    return response.data
