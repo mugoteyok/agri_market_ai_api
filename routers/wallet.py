@@ -15,15 +15,21 @@ router = APIRouter()
 
 
 
+
+
 # =====================================
 # GET FARMER WALLET
+# GET /api/marketplace/wallet/{farmer_id}
 # =====================================
 
 
 @router.get("/wallet/{farmer_id}")
 async def get_wallet(
+
     farmer_id: str
+
 ):
+
 
     response = (
 
@@ -34,8 +40,11 @@ async def get_wallet(
         .select("*")
 
         .eq(
+
             "farmer_id",
+
             farmer_id
+
         )
 
         .single()
@@ -45,7 +54,9 @@ async def get_wallet(
     )
 
 
+
     if not response.data:
+
 
         raise HTTPException(
 
@@ -56,6 +67,7 @@ async def get_wallet(
         )
 
 
+
     return response.data
 
 
@@ -64,22 +76,28 @@ async def get_wallet(
 
 # =====================================
 # CREATE FARMER WALLET
+# POST /api/marketplace/wallet/create
 # =====================================
 
 
 @router.post("/wallet/create")
 async def create_wallet(
+
     wallet: WalletCreate
+
 ):
 
 
     new_wallet = {
 
+
         "farmer_id":
+
         wallet.farmer_id,
 
 
         "balance":
+
         wallet.amount
 
     }
@@ -104,10 +122,12 @@ async def create_wallet(
 
 
         "message":
+
         "Wallet created successfully",
 
 
         "wallet":
+
         response.data
 
     }
@@ -118,33 +138,40 @@ async def create_wallet(
 
 # =====================================
 # ADD FARMER EARNINGS
+# POST /api/marketplace/wallet/earn
 # =====================================
 
 
 @router.post("/wallet/earn")
 async def add_money(
+
     data: WalletCreate
+
 ):
 
 
-    # Add transaction record
+    # Create transaction record
 
     transaction = {
 
 
         "farmer_id":
+
         data.farmer_id,
 
 
         "amount":
+
         data.amount,
 
 
         "type":
+
         "sale",
 
 
         "created_at":
+
         datetime.utcnow().isoformat()
 
     }
@@ -166,7 +193,8 @@ async def add_money(
 
 
 
-    # Update wallet balance
+
+    # Get wallet
 
     wallet_response = (
 
@@ -174,11 +202,14 @@ async def add_money(
 
         .table("wallets")
 
-        .select("balance")
+        .select("*")
 
         .eq(
+
             "farmer_id",
+
             data.farmer_id
+
         )
 
         .single()
@@ -189,12 +220,14 @@ async def add_money(
 
 
 
+
+
     if wallet_response.data:
 
 
         current_balance = (
 
-            wallet_response.data["balance"]
+            wallet_response.data.get("balance")
 
             or 0
 
@@ -214,6 +247,7 @@ async def add_money(
         supabase.table("wallets").update({
 
             "balance":
+
             new_balance
 
         }).eq(
@@ -223,6 +257,26 @@ async def add_money(
             data.farmer_id
 
         ).execute()
+
+
+
+    else:
+
+
+        # Create wallet automatically
+
+        supabase.table("wallets").insert({
+
+            "farmer_id":
+
+            data.farmer_id,
+
+
+            "balance":
+
+            data.amount
+
+        }).execute()
 
 
 
@@ -248,12 +302,15 @@ async def add_money(
 
 # =====================================
 # WITHDRAW MONEY
+# POST /api/marketplace/wallet/withdraw
 # =====================================
 
 
 @router.post("/wallet/withdraw")
 async def withdraw(
+
     data: WithdrawalCreate
+
 ):
 
 
@@ -290,6 +347,7 @@ async def withdraw(
         datetime.utcnow().isoformat()
 
     }
+
 
 
 
