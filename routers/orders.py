@@ -7,10 +7,7 @@ from schemas.order import OrderCreate
 from datetime import datetime
 
 
-
 router = APIRouter()
-
-
 
 
 
@@ -19,12 +16,10 @@ router = APIRouter()
 # POST /api/marketplace/orders
 # =====================================
 
-
 @router.post("/orders")
 async def create_order(
     order: OrderCreate
 ):
-
 
     # Get product details
 
@@ -37,26 +32,16 @@ async def create_order(
         .select("*")
 
         .eq(
-
             "id",
-
             order.product_id
-
         )
-
-        .single()
 
         .execute()
 
     )
 
 
-    product = product_response.data
-
-
-
-    if not product:
-
+    if not product_response.data:
 
         raise HTTPException(
 
@@ -65,6 +50,9 @@ async def create_order(
             detail="Product not found"
 
         )
+
+
+    product = product_response.data[0]
 
 
 
@@ -103,9 +91,14 @@ async def create_order(
         order.quantity,
 
 
-        "amount":
+        "total_amount":
 
         total_amount,
+
+
+        "payment_status":
+
+        "pending",
 
 
         "status":
@@ -118,7 +111,6 @@ async def create_order(
         datetime.utcnow().isoformat()
 
     }
-
 
 
 
@@ -156,9 +148,7 @@ async def create_order(
 
 # =====================================
 # GET FARMER ORDERS
-# GET /api/marketplace/orders/farmer/{farmer_id}
 # =====================================
-
 
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
@@ -205,9 +195,7 @@ async def farmer_orders(
 
 # =====================================
 # GET BUYER ORDERS
-# GET /api/marketplace/orders/buyer/{buyer_id}
 # =====================================
-
 
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
@@ -254,9 +242,7 @@ async def buyer_orders(
 
 # =====================================
 # COMPLETE ORDER AND PAY FARMER
-# PUT /api/marketplace/orders/{order_id}/complete
 # =====================================
-
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
@@ -265,8 +251,6 @@ async def complete_order(
 
 ):
 
-
-    # Find order
 
     order_response = (
 
@@ -284,19 +268,13 @@ async def complete_order(
 
         )
 
-        .single()
-
         .execute()
 
     )
 
 
 
-    order = order_response.data
-
-
-
-    if not order:
+    if not order_response.data:
 
 
         raise HTTPException(
@@ -309,13 +287,22 @@ async def complete_order(
 
 
 
-    # Mark order completed
+    order = order_response.data[0]
+
+
+
+
+    # Update order status
 
     supabase.table("orders").update({
 
         "status":
 
-        "completed"
+        "completed",
+
+        "payment_status":
+
+        "paid"
 
     }).eq(
 
@@ -329,7 +316,7 @@ async def complete_order(
 
 
 
-    # Add transaction
+    # Create transaction
 
     transaction = {
 
@@ -341,7 +328,7 @@ async def complete_order(
 
         "amount":
 
-        order["amount"],
+        order["total_amount"],
 
 
         "type":
@@ -367,8 +354,7 @@ async def complete_order(
 
 
 
-    # Update farmer wallet
-
+    # Get wallet
 
     wallet_response = (
 
@@ -386,8 +372,6 @@ async def complete_order(
 
         )
 
-        .single()
-
         .execute()
 
     )
@@ -395,33 +379,33 @@ async def complete_order(
 
 
 
+
     if wallet_response.data:
 
 
-        current_balance = (
-
-            wallet_response.data.get("balance")
-
-            or 0
-
-        )
+        wallet = wallet_response.data[0]
 
 
         new_balance = (
 
-            current_balance +
+            wallet["balance"]
 
-            order["amount"]
+            +
+
+            order["total_amount"]
 
         )
-
 
 
         supabase.table("wallets").update({
 
             "balance":
 
-            new_balance
+            new_balance,
+
+            "updated_at":
+
+            datetime.utcnow().isoformat()
 
         }).eq(
 
@@ -445,7 +429,17 @@ async def complete_order(
 
             "balance":
 
-            order["amount"]
+            order["total_amount"],
+
+
+            "currency":
+
+            "UGX",
+
+
+            "updated_at":
+
+            datetime.utcnow().isoformat()
 
         }).execute()
 
@@ -463,7 +457,7 @@ async def complete_order(
 
         "amount":
 
-        order["amount"]
+        order["total_amount"]
 
     }
 
@@ -473,9 +467,7 @@ async def complete_order(
 
 # =====================================
 # UPDATE ORDER STATUS
-# PUT /api/marketplace/orders/{order_id}
 # =====================================
-
 
 @router.put("/orders/{order_id}")
 async def update_order(
