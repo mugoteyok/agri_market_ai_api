@@ -16,6 +16,7 @@ router = APIRouter()
 
 # =====================================
 # CREATE PRODUCT LISTING
+# POST /api/marketplace/products
 # =====================================
 
 
@@ -27,67 +28,46 @@ async def create_product(
 
     product_data = {
 
-
         "farmer_id":
-
         product.farmer_id,
 
 
-
         "crop":
-
         product.crop,
 
 
-
         "description":
-
         product.description,
 
 
-
         "quantity":
-
         product.quantity,
 
 
-
         "unit":
-
         product.unit,
 
 
-
         "price_per_unit":
-
         product.price_per_unit,
 
 
-
         "region":
-
         product.region,
 
 
-
         "image_url":
-
         product.image_url,
 
 
-
         "status":
-
         "available",
 
 
-
         "created_at":
-
         datetime.utcnow().isoformat()
 
     }
-
 
 
 
@@ -109,13 +89,10 @@ async def create_product(
 
 
         "message":
-
         "Product listed successfully",
 
 
-
         "product":
-
         response.data
 
     }
@@ -126,6 +103,7 @@ async def create_product(
 
 # =====================================
 # GET ALL MARKETPLACE PRODUCTS
+# GET /api/marketplace/products
 # =====================================
 
 
@@ -170,7 +148,8 @@ async def get_products():
 
 
 # =====================================
-# GET PRODUCTS BY FARMER
+# GET FARMER PRODUCTS
+# GET /api/marketplace/products/farmer/{farmer_id}
 # =====================================
 
 
@@ -220,6 +199,7 @@ async def farmer_products(
 
 # =====================================
 # GET SINGLE PRODUCT
+# GET /api/marketplace/products/{product_id}
 # =====================================
 
 
@@ -276,6 +256,7 @@ async def get_product(
 
 # =====================================
 # UPDATE PRODUCT STATUS
+# PUT /api/marketplace/products/{product_id}/status
 # =====================================
 
 
@@ -298,7 +279,6 @@ async def update_product_status(
         .update({
 
             "status":
-
             status
 
         })
@@ -321,13 +301,10 @@ async def update_product_status(
 
 
         "message":
-
         "Product status updated",
 
 
-
         "product":
-
         response.data
 
-        }
+    }
