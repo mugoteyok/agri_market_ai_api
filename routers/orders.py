@@ -12,13 +12,18 @@ router = APIRouter()
 
 
 
+
+
 # =====================================
 # CREATE ORDER (BUY PRODUCT)
+# POST /api/marketplace/orders
 # =====================================
 
 
 @router.post("/orders")
-async def create_order(order: OrderCreate):
+async def create_order(
+    order: OrderCreate
+):
 
 
     # Get product details
@@ -32,8 +37,11 @@ async def create_order(order: OrderCreate):
         .select("*")
 
         .eq(
+
             "id",
+
             order.product_id
+
         )
 
         .single()
@@ -43,12 +51,12 @@ async def create_order(order: OrderCreate):
     )
 
 
-
     product = product_response.data
 
 
 
     if not product:
+
 
         raise HTTPException(
 
@@ -60,7 +68,7 @@ async def create_order(order: OrderCreate):
 
 
 
-    # Calculate order amount
+    # Calculate total amount
 
     total_amount = (
 
@@ -113,6 +121,7 @@ async def create_order(order: OrderCreate):
 
 
 
+
     response = (
 
         supabase
@@ -147,12 +156,15 @@ async def create_order(order: OrderCreate):
 
 # =====================================
 # GET FARMER ORDERS
+# GET /api/marketplace/orders/farmer/{farmer_id}
 # =====================================
 
 
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
+
     farmer_id: str
+
 ):
 
 
@@ -185,7 +197,6 @@ async def farmer_orders(
     )
 
 
-
     return response.data
 
 
@@ -194,12 +205,15 @@ async def farmer_orders(
 
 # =====================================
 # GET BUYER ORDERS
+# GET /api/marketplace/orders/buyer/{buyer_id}
 # =====================================
 
 
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
+
     buyer_id: str
+
 ):
 
 
@@ -232,7 +246,6 @@ async def buyer_orders(
     )
 
 
-
     return response.data
 
 
@@ -241,16 +254,19 @@ async def buyer_orders(
 
 # =====================================
 # COMPLETE ORDER AND PAY FARMER
+# PUT /api/marketplace/orders/{order_id}/complete
 # =====================================
 
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
+
     order_id: str
+
 ):
 
 
-    # Get order details
+    # Find order
 
     order_response = (
 
@@ -293,8 +309,7 @@ async def complete_order(
 
 
 
-    # Update order status
-
+    # Mark order completed
 
     supabase.table("orders").update({
 
@@ -314,8 +329,7 @@ async def complete_order(
 
 
 
-    # Create transaction record
-
+    # Add transaction
 
     transaction = {
 
@@ -353,7 +367,7 @@ async def complete_order(
 
 
 
-    # Get farmer wallet
+    # Update farmer wallet
 
 
     wallet_response = (
@@ -381,7 +395,6 @@ async def complete_order(
 
 
 
-
     if wallet_response.data:
 
 
@@ -392,7 +405,6 @@ async def complete_order(
             or 0
 
         )
-
 
 
         new_balance = (
@@ -421,11 +433,7 @@ async def complete_order(
 
 
 
-
     else:
-
-
-        # Create wallet if missing
 
 
         supabase.table("wallets").insert({
@@ -440,6 +448,7 @@ async def complete_order(
             order["amount"]
 
         }).execute()
+
 
 
 
@@ -463,7 +472,8 @@ async def complete_order(
 
 
 # =====================================
-# UPDATE ORDER STATUS MANUALLY
+# UPDATE ORDER STATUS
+# PUT /api/marketplace/orders/{order_id}
 # =====================================
 
 
