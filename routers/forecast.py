@@ -11,21 +11,25 @@ router = APIRouter()
 
 
 
+
 # =====================================
 # AI MARKET PRICE FORECAST
+# POST /api/marketplace/forecast
 # =====================================
 
 
 @router.post("/forecast")
 def forecast_price(
+
     data: ForecastRequest
+
 ):
 
 
     try:
 
 
-        price = predict_market_price(
+        predicted_price = predict_market_price(
 
             crop=data.crop,
 
@@ -56,7 +60,7 @@ def forecast_price(
 
             "predicted_price":
 
-            price,
+            predicted_price,
 
 
             "currency":
@@ -66,9 +70,11 @@ def forecast_price(
 
             "message":
 
-            "AI price prediction generated"
+            "AI price prediction generated successfully"
 
         }
+
+
 
 
 
@@ -78,7 +84,9 @@ def forecast_price(
 
         raise HTTPException(
 
+
             status_code=500,
+
 
             detail=str(e)
 
