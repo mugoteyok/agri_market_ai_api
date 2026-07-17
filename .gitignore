@@ -2,3 +2,4 @@
 venv/
 __pycache__/
 *.pyc
+mtn_api_key.py
