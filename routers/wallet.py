@@ -474,37 +474,53 @@ async def withdraw(
 
     withdrawal = {
 
+    "farmer_id": data.farmer_id,
 
-        "farmer_id":
+    "amount": data.amount,
 
-        data.farmer_id,
+    "phone_number": data.mobile_number,
 
+    "provider": data.network,
 
-        "amount":
+    "status": "processing",
 
-        data.amount,
+    "transaction_id": None,
 
+    "created_at": datetime.utcnow().isoformat()
 
-        "phone":
-
-        data.mobile_number,
-
-
-        "provider":
-
-        data.network,
+}
 
 
-        "status":
+        
 
-        "processing",
+        
 
 
-        "created_at":
+        
 
-        datetime.utcnow().isoformat()
+        
 
-    }
+
+        
+
+        
+
+
+        
+
+        
+
+
+        
+
+        
+
+
+        
+
+        
+
+    
 
 
 
