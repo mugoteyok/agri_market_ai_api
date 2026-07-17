@@ -7,7 +7,11 @@ from schemas.wallet import (
     WithdrawalCreate
 )
 
+from services.mtn_service import transfer_money
+
 from datetime import datetime
+
+import uuid
 
 
 
@@ -19,41 +23,26 @@ router = APIRouter()
 
 # =====================================
 # GET FARMER WALLET
-# GET /api/marketplace/wallet/{farmer_id}
 # =====================================
 
 @router.get("/wallet/{farmer_id}")
 async def get_wallet(
-
     farmer_id: str
-
 ):
 
-
     response = (
-
         supabase
-
         .table("wallets")
-
         .select("*")
-
         .eq(
-
             "farmer_id",
-
             farmer_id
-
         )
-
         .execute()
-
     )
 
 
-
     if response.data:
-
 
         return response.data[0]
 
@@ -61,20 +50,11 @@ async def get_wallet(
 
     new_wallet = {
 
+        "farmer_id": farmer_id,
 
-        "farmer_id":
+        "balance": 0,
 
-        farmer_id,
-
-
-        "balance":
-
-        0,
-
-
-        "currency":
-
-        "UGX"
+        "currency": "UGX"
 
     }
 
@@ -83,11 +63,8 @@ async def get_wallet(
     created_wallet = (
 
         supabase
-
         .table("wallets")
-
         .insert(new_wallet)
-
         .execute()
 
     )
@@ -102,54 +79,39 @@ async def get_wallet(
 
 
 
+
 # =====================================
 # CREATE FARMER WALLET
-# POST /api/marketplace/wallet/create
 # =====================================
 
 @router.post("/wallet/create")
 async def create_wallet(
-
     wallet: WalletCreate
-
 ):
 
 
     existing = (
 
         supabase
-
         .table("wallets")
-
         .select("*")
-
         .eq(
-
             "farmer_id",
-
             wallet.farmer_id
-
         )
-
         .execute()
 
     )
 
 
-
     if existing.data:
-
 
         return {
 
-
             "message":
-
             "Wallet already exists",
 
-
             "wallet":
-
             existing.data[0]
 
         }
@@ -157,22 +119,15 @@ async def create_wallet(
 
 
 
-
     new_wallet = {
 
-
         "farmer_id":
-
         wallet.farmer_id,
 
-
         "balance":
-
         wallet.amount,
 
-
         "currency":
-
         "UGX"
 
     }
@@ -182,11 +137,8 @@ async def create_wallet(
     response = (
 
         supabase
-
         .table("wallets")
-
         .insert(new_wallet)
-
         .execute()
 
     )
@@ -195,14 +147,10 @@ async def create_wallet(
 
     return {
 
-
         "message":
-
         "Wallet created successfully",
 
-
         "wallet":
-
         response.data[0]
 
     }
@@ -217,37 +165,26 @@ async def create_wallet(
 
 # =====================================
 # ADD FARMER EARNINGS
-# POST /api/marketplace/wallet/earn
 # =====================================
 
 @router.post("/wallet/earn")
 async def add_money(
-
     data: WalletCreate
-
 ):
 
 
     transaction = {
 
-
         "farmer_id":
-
         data.farmer_id,
 
-
         "amount":
-
         data.amount,
 
-
         "type":
-
         "sale",
 
-
         "created_at":
-
         datetime.utcnow().isoformat()
 
     }
@@ -255,19 +192,14 @@ async def add_money(
 
 
 
-
     transaction_response = (
 
         supabase
-
         .table("transactions")
-
         .insert(transaction)
-
         .execute()
 
     )
-
 
 
 
@@ -275,23 +207,15 @@ async def add_money(
     wallet_response = (
 
         supabase
-
         .table("wallets")
-
         .select("*")
-
         .eq(
-
             "farmer_id",
-
             data.farmer_id
-
         )
-
         .execute()
 
     )
-
 
 
 
@@ -305,17 +229,14 @@ async def add_money(
         current_balance = (
 
             wallet.get("balance")
-
             or 0
 
         )
 
 
-
         new_balance = (
 
             current_balance
-
             + data.amount
 
         )
@@ -324,27 +245,18 @@ async def add_money(
 
         supabase.table("wallets").update({
 
-
             "balance":
-
             new_balance,
 
-
             "updated_at":
-
             datetime.utcnow().isoformat()
-
 
         }).eq(
 
-
             "farmer_id",
-
             data.farmer_id
 
-
         ).execute()
-
 
 
 
@@ -353,19 +265,13 @@ async def add_money(
 
         supabase.table("wallets").insert({
 
-
             "farmer_id":
-
             data.farmer_id,
 
-
             "balance":
-
             data.amount,
 
-
             "currency":
-
             "UGX"
 
         }).execute()
@@ -376,15 +282,10 @@ async def add_money(
 
     return {
 
-
         "message":
-
         "Payment received and wallet updated",
 
-
-
         "transaction":
-
         transaction_response.data
 
     }
@@ -398,34 +299,24 @@ async def add_money(
 
 
 # =====================================
-# WITHDRAW MONEY
-# POST /api/marketplace/wallet/withdraw
+# WITHDRAW MONEY + MTN DISBURSEMENT
 # =====================================
 
 @router.post("/wallet/withdraw")
 async def withdraw(
-
     data: WithdrawalCreate
-
 ):
 
 
     wallet_response = (
 
         supabase
-
         .table("wallets")
-
         .select("*")
-
         .eq(
-
             "farmer_id",
-
             data.farmer_id
-
         )
-
         .execute()
 
     )
@@ -442,7 +333,6 @@ async def withdraw(
             detail="Wallet not found"
 
         )
-
 
 
 
@@ -471,56 +361,49 @@ async def withdraw(
 
 
 
+    # Generate MTN transaction reference
+
+    transaction_id = str(
+        uuid.uuid4()
+    )
+
+
+
+
+
+    # Save withdrawal request
 
     withdrawal = {
 
-    "farmer_id": data.farmer_id,
 
-    "amount": data.amount,
-
-    "phone_number": data.mobile_number,
-
-    "provider": data.network,
-
-    "status": "processing",
-
-    "transaction_id": None,
-
-    "created_at": datetime.utcnow().isoformat()
-
-}
+        "farmer_id":
+        data.farmer_id,
 
 
-        
-
-        
-
-
-        
-
-        
+        "amount":
+        data.amount,
 
 
-        
-
-        
-
-
-        
-
-        
+        "phone_number":
+        data.mobile_number,
 
 
-        
+        "provider":
+        data.network,
 
-        
+
+        "status":
+        "processing",
 
 
-        
+        "transaction_id":
+        transaction_id,
 
-        
 
-    
+        "created_at":
+        datetime.utcnow().isoformat()
+
+    }
 
 
 
@@ -529,11 +412,8 @@ async def withdraw(
     response = (
 
         supabase
-
         .table("withdrawals")
-
         .insert(withdrawal)
-
         .execute()
 
     )
@@ -542,32 +422,125 @@ async def withdraw(
 
 
 
-    new_balance = balance - data.amount
+    try:
+
+
+        # =====================================
+        # SEND MONEY THROUGH MTN
+        # =====================================
+
+
+        mtn_response = transfer_money(
+
+            amount=data.amount,
+
+            phone_number=data.mobile_number,
+
+            external_id=transaction_id
+
+        )
 
 
 
 
+        if mtn_response.status_code in [200,202]:
+
+            
+            supabase.table("withdrawals").update({
+
+                "status":
+                "processing"
+
+            }).eq(
+
+                "transaction_id",
+                transaction_id
+
+            ).execute()
+
+
+
+        else:
+
+
+            raise Exception(
+                mtn_response.text
+            )
+
+
+
+
+
+    except Exception as e:
+
+
+
+        # MTN failed
+        # Refund wallet
+
+
+        supabase.table("withdrawals").update({
+
+            "status":
+            "failed"
+
+        }).eq(
+
+            "transaction_id",
+            transaction_id
+
+        ).execute()
+
+
+
+
+
+        supabase.table("wallets").update({
+
+            "balance":
+            balance,
+
+            "updated_at":
+            datetime.utcnow().isoformat()
+
+
+        }).eq(
+
+            "farmer_id",
+            data.farmer_id
+
+        ).execute()
+
+
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=f"MTN payout failed: {str(e)}"
+
+        )
+
+
+
+
+
+    # Deduct wallet only after MTN request accepted
 
     supabase.table("wallets").update({
 
-
         "balance":
-
-        new_balance,
+        balance - data.amount,
 
 
         "updated_at":
-
         datetime.utcnow().isoformat()
 
 
     }).eq(
 
-
         "farmer_id",
-
         data.farmer_id
-
 
     ).execute()
 
@@ -579,13 +552,10 @@ async def withdraw(
 
 
         "message":
-
-        "Withdrawal request submitted",
-
+        "Withdrawal sent to MTN successfully",
 
 
         "withdrawal":
-
         response.data
 
     }
@@ -600,7 +570,6 @@ async def withdraw(
 
 # =====================================
 # GET FARMER TRANSACTIONS
-# GET /api/marketplace/transactions/{farmer_id}
 # =====================================
 
 @router.get("/transactions/{farmer_id}")
@@ -614,19 +583,12 @@ async def farmer_transactions(
     response = (
 
         supabase
-
         .table("transactions")
-
         .select("*")
-
         .eq(
-
             "farmer_id",
-
             farmer_id
-
         )
-
         .order(
 
             "created_at",
@@ -634,7 +596,6 @@ async def farmer_transactions(
             desc=True
 
         )
-
         .execute()
 
     )
