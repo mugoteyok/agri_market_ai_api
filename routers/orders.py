@@ -7,18 +7,24 @@ from schemas.order import OrderCreate
 from datetime import datetime
 
 
+
 router = APIRouter()
 
 
 
+
+
 # =====================================
-# CREATE ORDER (BUY PRODUCT)
+# CREATE ORDER
 # POST /api/marketplace/orders
 # =====================================
 
+
 @router.post("/orders")
 async def create_order(
+
     order: OrderCreate
+
 ):
 
 
@@ -31,8 +37,11 @@ async def create_order(
         .select("*")
 
         .eq(
+
             "id",
+
             order.product_id
+
         )
 
         .execute()
@@ -40,7 +49,9 @@ async def create_order(
     )
 
 
+
     if not product_response.data:
+
 
         raise HTTPException(
 
@@ -51,7 +62,24 @@ async def create_order(
         )
 
 
+
     product = product_response.data[0]
+
+
+
+
+    if order.quantity > product["quantity"]:
+
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Insufficient product quantity"
+
+        )
+
+
 
 
 
@@ -62,6 +90,8 @@ async def create_order(
         product["price_per_unit"]
 
     )
+
+
 
 
 
@@ -81,6 +111,21 @@ async def create_order(
         "product_id":
 
         order.product_id,
+
+
+        "crop":
+
+        product["crop"],
+
+
+        "price_per_unit":
+
+        product["price_per_unit"],
+
+
+        "image_url":
+
+        product.get("image_url"),
 
 
         "quantity":
@@ -116,7 +161,9 @@ async def create_order(
 
 
 
-    response = (
+
+
+    order_response = (
 
         supabase
 
@@ -130,6 +177,56 @@ async def create_order(
 
 
 
+
+
+    # Reduce product stock
+
+    remaining_quantity = (
+
+        product["quantity"]
+
+        -
+
+        order.quantity
+
+    )
+
+
+
+    product_update = {
+
+
+        "quantity":
+
+        remaining_quantity
+
+    }
+
+
+
+    if remaining_quantity <= 0:
+
+
+        product_update["status"] = "sold"
+
+
+
+
+    supabase.table("products").update(
+
+        product_update
+
+    ).eq(
+
+        "id",
+
+        order.product_id
+
+    ).execute()
+
+
+
+
     return {
 
 
@@ -140,7 +237,7 @@ async def create_order(
 
         "order":
 
-        response.data
+        order_response.data
 
     }
 
@@ -148,19 +245,24 @@ async def create_order(
 
 
 
+
+
+
+
 # =====================================
-# GET FARMER ORDERS
+# FARMER ORDERS
 # =====================================
+
 
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
 
-    farmer_id: str
+    farmer_id:str
 
 ):
 
 
-    response = (
+    response=(
 
         supabase
 
@@ -195,19 +297,22 @@ async def farmer_orders(
 
 
 
+
+
 # =====================================
-# GET BUYER ORDERS
+# BUYER ORDERS
 # =====================================
+
 
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
 
-    buyer_id: str
+    buyer_id:str
 
 ):
 
 
-    response = (
+    response=(
 
         supabase
 
@@ -242,19 +347,22 @@ async def buyer_orders(
 
 
 
+
+
 # =====================================
-# COMPLETE ORDER AND PAY FARMER
+# COMPLETE ORDER
 # =====================================
+
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
 
-    order_id: str
+    order_id:str
 
 ):
 
 
-    order_response = (
+    order_response=(
 
         supabase
 
@@ -295,24 +403,19 @@ async def complete_order(
 
 
 
-    # Update order status
+    # Update order
+
 
     supabase.table("orders").update({
 
 
-        "status":
-
-        "completed",
+        "status":"completed",
 
 
-        "order_status":
-
-        "completed",
+        "order_status":"completed",
 
 
-        "payment_status":
-
-        "paid"
+        "payment_status":"paid"
 
 
     }).eq(
@@ -327,9 +430,10 @@ async def complete_order(
 
 
 
-    # Create transaction
+    # Transaction
 
-    transaction = {
+
+    transaction={
 
 
         "farmer_id":
@@ -347,11 +451,22 @@ async def complete_order(
         "sale",
 
 
+        "reference_id":
+
+        order_id,
+
+
+        "description":
+
+        f"{order.get('crop')} sale",
+
+
         "created_at":
 
         datetime.utcnow().isoformat()
 
     }
+
 
 
 
@@ -365,9 +480,10 @@ async def complete_order(
 
 
 
-    # Get farmer wallet
+    # Update wallet
 
-    wallet_response = (
+
+    wallet=(
 
         supabase
 
@@ -391,43 +507,27 @@ async def complete_order(
 
 
 
-    if wallet_response.data:
+    if wallet.data:
 
 
-        wallet = wallet_response.data[0]
+        balance = wallet.data[0].get(
 
+            "balance"
 
-        current_balance = (
-
-            wallet["balance"]
-
-            or 0
-
-        )
-
-
-        new_balance = (
-
-            current_balance +
-
-            order["total_amount"]
-
-        )
+        ) or 0
 
 
 
         supabase.table("wallets").update({
 
-
             "balance":
 
-            new_balance,
+            balance + order["total_amount"],
 
 
             "updated_at":
 
             datetime.utcnow().isoformat()
-
 
         }).eq(
 
@@ -439,12 +539,10 @@ async def complete_order(
 
 
 
-
     else:
 
 
         supabase.table("wallets").insert({
-
 
             "farmer_id":
 
@@ -458,92 +556,23 @@ async def complete_order(
 
             "currency":
 
-            "UGX",
-
-
-            "updated_at":
-
-            datetime.utcnow().isoformat()
-
+            "UGX"
 
         }).execute()
 
 
 
 
-
     return {
 
 
         "message":
 
-        "Order completed and farmer paid",
+        "Order completed and farmer wallet credited",
 
 
         "amount":
 
         order["total_amount"]
-
-
-    }
-
-
-
-
-
-# =====================================
-# UPDATE ORDER STATUS
-# =====================================
-
-@router.put("/orders/{order_id}")
-async def update_order(
-
-    order_id: str,
-
-    status: str
-
-):
-
-
-    response = (
-
-        supabase
-
-        .table("orders")
-
-        .update({
-
-
-            "status":
-
-            status
-
-
-        })
-
-        .eq(
-
-            "id",
-
-            order_id
-
-        )
-
-        .execute()
-
-    )
-
-
-    return {
-
-
-        "message":
-
-        "Order status updated",
-
-
-        "order":
-
-        response.data
 
     }
