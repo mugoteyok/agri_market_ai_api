@@ -3,13 +3,9 @@ from fastapi import APIRouter, HTTPException
 from database import supabase
 
 from schemas.wallet import (
-
     WalletCreate,
-
     WalletEarning,
-
     WithdrawalCreate
-
 )
 
 from services.mtn_service import transfer_money
@@ -34,12 +30,12 @@ router = APIRouter()
 @router.get("/wallet/{farmer_id}")
 async def get_wallet(
 
-    farmer_id:str
+    farmer_id: str
 
 ):
 
 
-    response=(
+    response = (
 
         supabase
 
@@ -67,8 +63,7 @@ async def get_wallet(
 
 
 
-    wallet={
-
+    wallet = {
 
         "farmer_id":
 
@@ -87,7 +82,8 @@ async def get_wallet(
     }
 
 
-    created=(
+
+    created = (
 
         supabase
 
@@ -100,7 +96,9 @@ async def get_wallet(
     )
 
 
+
     return created.data[0]
+
 
 
 
@@ -115,12 +113,12 @@ async def get_wallet(
 @router.post("/wallet/create")
 async def create_wallet(
 
-    wallet:WalletCreate
+    wallet: WalletCreate
 
 ):
 
 
-    existing=(
+    existing = (
 
         supabase
 
@@ -142,6 +140,7 @@ async def create_wallet(
 
 
 
+
     if existing.data:
 
 
@@ -150,6 +149,7 @@ async def create_wallet(
             "message":
 
             "Wallet already exists",
+
 
             "wallet":
 
@@ -160,7 +160,9 @@ async def create_wallet(
 
 
 
-    response=(
+
+
+    response = (
 
         supabase
 
@@ -189,6 +191,8 @@ async def create_wallet(
     )
 
 
+
+
     return response.data[0]
 
 
@@ -196,20 +200,22 @@ async def create_wallet(
 
 
 
+
 # =====================================
-# WITHDRAW MONEY
+# CREDIT FARMER WALLET
+# MARKETPLACE ORDER PAYMENT
 # =====================================
 
 
-@router.post("/wallet/withdraw")
-async def withdraw(
+@router.post("/wallet/credit")
+async def credit_wallet(
 
-    data:WithdrawalCreate
+    data: WalletEarning
 
 ):
 
 
-    wallet=(
+    wallet = (
 
         supabase
 
@@ -230,6 +236,217 @@ async def withdraw(
     )
 
 
+
+
+
+    # Create wallet if missing
+
+    if not wallet.data:
+
+
+        supabase
+
+        .table("wallets")
+
+        .insert({
+
+            "farmer_id":
+
+            data.farmer_id,
+
+
+            "balance":
+
+            0,
+
+
+            "currency":
+
+            "UGX"
+
+        })
+
+        .execute()
+
+
+
+        current_balance = 0
+
+
+
+    else:
+
+
+        current_balance = (
+
+            wallet.data[0]["balance"]
+
+            or
+
+            0
+
+        )
+
+
+
+
+
+
+
+    new_balance = (
+
+        current_balance
+
+        +
+
+        data.amount
+
+    )
+
+
+
+
+
+
+
+    # Update wallet balance
+
+
+    supabase.table("wallets").update({
+
+        "balance":
+
+        new_balance
+
+    }).eq(
+
+        "farmer_id",
+
+        data.farmer_id
+
+    ).execute()
+
+
+
+
+
+
+
+    # Save earning transaction
+
+
+    transaction = (
+
+        supabase
+
+        .table("transactions")
+
+        .insert({
+
+            "farmer_id":
+
+            data.farmer_id,
+
+
+            "amount":
+
+            data.amount,
+
+
+            "type":
+
+            "credit",
+
+
+            "reference_id":
+
+            data.reference_id,
+
+
+            "description":
+
+            data.description,
+
+
+            "created_at":
+
+            datetime.utcnow().isoformat()
+
+        })
+
+        .execute()
+
+    )
+
+
+
+
+
+
+    return {
+
+
+        "message":
+
+        "Wallet credited successfully",
+
+
+
+        "new_balance":
+
+        new_balance,
+
+
+
+        "transaction":
+
+        transaction.data
+
+    }
+
+
+
+
+
+
+
+
+# =====================================
+# WITHDRAW MONEY
+# =====================================
+
+
+@router.post("/wallet/withdraw")
+async def withdraw(
+
+    data: WithdrawalCreate
+
+):
+
+
+    wallet = (
+
+        supabase
+
+        .table("wallets")
+
+        .select("*")
+
+        .eq(
+
+            "farmer_id",
+
+            data.farmer_id
+
+        )
+
+        .execute()
+
+    )
+
+
+
+
     if not wallet.data:
 
 
@@ -243,7 +460,20 @@ async def withdraw(
 
 
 
-    balance=wallet.data[0]["balance"] or 0
+
+
+    balance = (
+
+        wallet.data[0]["balance"]
+
+        or
+
+        0
+
+    )
+
+
+
 
 
 
@@ -260,12 +490,19 @@ async def withdraw(
 
 
 
-    transaction_id=str(uuid.uuid4())
 
 
 
 
-    response=(
+    transaction_id = str(uuid.uuid4())
+
+
+
+
+
+
+
+    response = (
 
         supabase
 
@@ -316,10 +553,13 @@ async def withdraw(
 
 
 
+
+
+
     try:
 
 
-        mtn=transfer_money(
+        mtn = transfer_money(
 
             amount=data.amount,
 
@@ -330,9 +570,14 @@ async def withdraw(
         )
 
 
-        if mtn.status_code not in [200,202]:
+
+
+        if mtn.status_code not in [200, 202]:
 
             raise Exception(mtn.text)
+
+
+
 
 
 
@@ -341,7 +586,7 @@ async def withdraw(
 
             "balance":
 
-            balance-data.amount
+            balance - data.amount
 
         }).eq(
 
@@ -350,6 +595,10 @@ async def withdraw(
             data.farmer_id
 
         ).execute()
+
+
+
+
 
 
 
@@ -366,6 +615,9 @@ async def withdraw(
             response.data
 
         }
+
+
+
 
 
 
@@ -388,6 +640,9 @@ async def withdraw(
 
 
 
+
+
+
         raise HTTPException(
 
             status_code=500,
@@ -395,6 +650,8 @@ async def withdraw(
             detail=str(e)
 
         )
+
+
 
 
 
@@ -409,12 +666,12 @@ async def withdraw(
 @router.get("/transactions/{farmer_id}")
 async def transactions(
 
-    farmer_id:str
+    farmer_id: str
 
 ):
 
 
-    response=(
+    response = (
 
         supabase
 
@@ -441,6 +698,7 @@ async def transactions(
         .execute()
 
     )
+
 
 
     return response.data
