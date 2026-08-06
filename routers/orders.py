@@ -3,13 +3,19 @@ from fastapi import APIRouter, HTTPException
 from database import supabase
 
 from schemas.order import OrderCreate
+
 from schemas.wallet import WalletEarning
+
 from schemas.payment import PaymentRequest
 
 from datetime import datetime
 
 
+
 router = APIRouter()
+
+
+
 
 
 # =====================================
@@ -17,12 +23,14 @@ router = APIRouter()
 # POST /api/marketplace/orders
 # =====================================
 
+
 @router.post("/orders")
 async def create_order(
 
     order: OrderCreate
 
 ):
+
 
     product_response = (
 
@@ -44,7 +52,9 @@ async def create_order(
 
     )
 
+
     if not product_response.data:
+
 
         raise HTTPException(
 
@@ -54,9 +64,16 @@ async def create_order(
 
         )
 
+
+
     product = product_response.data[0]
 
+
+
+
+
     if order.quantity > product["quantity"]:
+
 
         raise HTTPException(
 
@@ -66,6 +83,10 @@ async def create_order(
 
         )
 
+
+
+
+
     total_amount = (
 
         order.quantity *
@@ -74,61 +95,95 @@ async def create_order(
 
     )
 
+
+
+
+
     new_order = {
+
 
         "buyer_id":
 
         order.buyer_id,
 
+
+
         "farmer_id":
 
         product["farmer_id"],
+
+
 
         "product_id":
 
         order.product_id,
 
+
+
         "crop":
 
         product["crop"],
+
+
 
         "price_per_unit":
 
         product["price_per_unit"],
 
+
+
         "image_url":
 
         product.get("image_url"),
+
+
 
         "quantity":
 
         order.quantity,
 
+
+
         "total_amount":
 
         total_amount,
+
+
 
         "payment_status":
 
         "pending",
 
+
+
         "payment_method":
 
         "Mobile Money",
+
+
 
         "order_status":
 
         "placed",
 
+
+
         "status":
 
         "pending",
+
+
 
         "created_at":
 
         datetime.utcnow().isoformat()
 
     }
+
+
+
+
+
 
     order_response = (
 
@@ -142,6 +197,10 @@ async def create_order(
 
     )
 
+
+
+
+
     remaining_quantity = (
 
         product["quantity"]
@@ -152,7 +211,12 @@ async def create_order(
 
     )
 
+
+
+
+
     product_update = {
+
 
         "quantity":
 
@@ -160,9 +224,19 @@ async def create_order(
 
     }
 
+
+
+
+
     if remaining_quantity <= 0:
 
+
         product_update["status"] = "sold"
+
+
+
+
+
 
     supabase.table("products").update(
 
@@ -176,11 +250,18 @@ async def create_order(
 
     ).execute()
 
+
+
+
+
     return {
+
 
         "message":
 
         "Order created successfully",
+
+
 
         "order":
 
@@ -189,9 +270,17 @@ async def create_order(
     }
 
 
+
+
+
+
+
+
+
 # =====================================
 # FARMER ORDERS
 # =====================================
+
 
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
@@ -199,6 +288,7 @@ async def farmer_orders(
     farmer_id: str
 
 ):
+
 
     response = (
 
@@ -228,12 +318,21 @@ async def farmer_orders(
 
     )
 
+
     return response.data
+
+
+
+
+
+
+
 
 
 # =====================================
 # BUYER ORDERS
 # =====================================
+
 
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
@@ -241,6 +340,7 @@ async def buyer_orders(
     buyer_id: str
 
 ):
+
 
     response = (
 
@@ -270,12 +370,22 @@ async def buyer_orders(
 
     )
 
+
     return response.data
+
+
+
+
+
+
+
+
 
 
 # =====================================
 # GET SINGLE ORDER
 # =====================================
+
 
 @router.get("/orders/{order_id}")
 async def get_order_details(
@@ -283,6 +393,7 @@ async def get_order_details(
     order_id: str
 
 ):
+
 
     response = (
 
@@ -304,7 +415,10 @@ async def get_order_details(
 
     )
 
+
+
     if not response.data:
+
 
         raise HTTPException(
 
@@ -314,12 +428,23 @@ async def get_order_details(
 
         )
 
+
+
     return response.data[0]
+
+
+
+
+
+
+
 
 
 # =====================================
 # PAY ORDER
+# POST /orders/{order_id}/payment
 # =====================================
+
 
 @router.post("/orders/{order_id}/payment")
 async def pay_order(
@@ -330,6 +455,7 @@ async def pay_order(
 
 ):
 
+
     order_response = (
 
         supabase
@@ -350,7 +476,10 @@ async def pay_order(
 
     )
 
+
+
     if not order_response.data:
+
 
         raise HTTPException(
 
@@ -360,9 +489,15 @@ async def pay_order(
 
         )
 
+
+
     order = order_response.data[0]
 
+
+
+
     if order["payment_status"] == "paid":
+
 
         raise HTTPException(
 
@@ -372,15 +507,24 @@ async def pay_order(
 
         )
 
+
+
+
+
     supabase.table("orders").update({
+
 
         "payment_status":
 
         "paid",
 
+
+
         "payment_method":
 
         payment.payment_method
+
+
 
     }).eq(
 
@@ -390,30 +534,42 @@ async def pay_order(
 
     ).execute()
 
+
+
+
+
+
     return {
+
 
         "message":
 
         "Payment successful",
 
+
+
         "order_id":
 
         order_id,
 
+
+
         "payment_status":
 
         "paid",
+
+
 
         "payment_method":
 
         payment.payment_method
 
     }
-
-
-# =====================================
+ # =====================================
 # CANCEL ORDER
+# PUT /orders/{order_id}/cancel
 # =====================================
+
 
 @router.put("/orders/{order_id}/cancel")
 async def cancel_order(
@@ -421,6 +577,7 @@ async def cancel_order(
     order_id: str
 
 ):
+
 
     order_response = (
 
@@ -442,7 +599,10 @@ async def cancel_order(
 
     )
 
+
+
     if not order_response.data:
+
 
         raise HTTPException(
 
@@ -452,9 +612,16 @@ async def cancel_order(
 
         )
 
+
+
     order = order_response.data[0]
 
+
+
+
+
     if order["order_status"] != "placed":
+
 
         raise HTTPException(
 
@@ -464,15 +631,22 @@ async def cancel_order(
 
         )
 
+
+
+
+
     supabase.table("orders").update({
 
         "order_status":
 
         "cancelled",
 
+
+
         "status":
 
         "cancelled"
+
 
     }).eq(
 
@@ -482,17 +656,32 @@ async def cancel_order(
 
     ).execute()
 
+
+
+
+
     return {
+
 
         "message":
 
         "Order cancelled successfully"
 
+
     }
+
+
+
+
+
+
+
+
 # =====================================
 # ACCEPT ORDER
 # PUT /orders/{order_id}/accept
 # =====================================
+
 
 @router.put("/orders/{order_id}/accept")
 async def accept_order(
@@ -500,6 +689,7 @@ async def accept_order(
     order_id: str
 
 ):
+
 
     order_response = (
 
@@ -521,7 +711,10 @@ async def accept_order(
 
     )
 
+
+
     if not order_response.data:
+
 
         raise HTTPException(
 
@@ -531,12 +724,16 @@ async def accept_order(
 
         )
 
+
+
     order = order_response.data[0]
 
 
 
-    # Only placed orders can be accepted
+
+
     if order["order_status"] != "placed":
+
 
         raise HTTPException(
 
@@ -548,20 +745,26 @@ async def accept_order(
 
 
 
-    # Update order
+
+
     supabase.table("orders").update({
 
         "order_status":
 
         "accepted",
 
+
+
         "status":
 
         "accepted",
 
+
+
         "accepted_at":
 
         datetime.utcnow().isoformat()
+
 
     }).eq(
 
@@ -573,24 +776,42 @@ async def accept_order(
 
 
 
+
+
     return {
+
 
         "message":
 
         "Order accepted successfully",
 
+
+
         "order_id":
 
         order_id,
+
+
 
         "order_status":
 
         "accepted"
 
-    }    
+    }
+
+
+
+
+
+
+
+
+
 # =====================================
 # COMPLETE ORDER
+# PUT /orders/{order_id}/complete
 # =====================================
+
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
@@ -598,6 +819,7 @@ async def complete_order(
     order_id: str
 
 ):
+
 
     order_response = (
 
@@ -619,7 +841,10 @@ async def complete_order(
 
     )
 
+
+
     if not order_response.data:
+
 
         raise HTTPException(
 
@@ -629,15 +854,19 @@ async def complete_order(
 
         )
 
+
+
     order = order_response.data[0]
 
 
 
-    # =====================================
-    # PAYMENT MUST BE COMPLETED FIRST
-    # =====================================
+
+
+
+    # Payment check
 
     if order["payment_status"] != "paid":
+
 
         raise HTTPException(
 
@@ -649,11 +878,14 @@ async def complete_order(
 
 
 
-    # =====================================
-    # PREVENT DUPLICATE COMPLETION
-    # =====================================
+
+
+
+
+    # Prevent duplicate completion
 
     if order["order_status"] == "completed":
+
 
         raise HTTPException(
 
@@ -665,19 +897,25 @@ async def complete_order(
 
 
 
-    # =====================================
-    # UPDATE ORDER
-    # =====================================
+
+
+
+
+    # Update order status
 
     supabase.table("orders").update({
+
 
         "status":
 
         "completed",
 
+
+
         "order_status":
 
         "completed"
+
 
     }).eq(
 
@@ -689,9 +927,14 @@ async def complete_order(
 
 
 
+
+
+
+
     # =====================================
     # CREDIT FARMER WALLET
     # =====================================
+
 
     wallet = (
 
@@ -715,7 +958,11 @@ async def complete_order(
 
 
 
+
+
+
     if wallet.data:
+
 
         current_balance = (
 
@@ -741,15 +988,22 @@ async def complete_order(
 
 
 
+
+
         supabase.table("wallets").update({
+
 
             "balance":
 
             new_balance,
 
+
+
             "updated_at":
 
             datetime.utcnow().isoformat()
+
+
 
         }).eq(
 
@@ -759,76 +1013,117 @@ async def complete_order(
 
         ).execute()
 
+
+
+
+
+
     else:
 
+
         supabase.table("wallets").insert({
+
 
             "farmer_id":
 
             order["farmer_id"],
 
+
+
             "balance":
 
             order["total_amount"],
+
+
 
             "currency":
 
             "UGX",
 
+
+
             "created_at":
 
             datetime.utcnow().isoformat()
+
 
         }).execute()
 
 
 
+
+
+
+
     # =====================================
-    # CREATE TRANSACTION RECORD
+    # CREATE TRANSACTION
     # =====================================
 
+
     supabase.table("transactions").insert({
+
 
         "farmer_id":
 
         order["farmer_id"],
 
+
+
         "amount":
 
         order["total_amount"],
+
+
 
         "type":
 
         "credit",
 
+
+
         "reference_id":
 
         order_id,
+
+
 
         "description":
 
         f"{order.get('crop')} marketplace sale",
 
+
+
         "created_at":
 
         datetime.utcnow().isoformat()
+
 
     }).execute()
 
 
 
+
+
+
+
+
     return {
+
 
         "message":
 
         "Order completed and farmer wallet credited.",
 
+
+
         "order_id":
 
         order_id,
+
+
 
         "amount":
 
         order["total_amount"]
 
-    }
+    }   
