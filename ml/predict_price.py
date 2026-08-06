@@ -3,11 +3,10 @@ import pandas as pd
 import os
 
 
+
 MODEL_PATH = "models/price_model.pkl"
 
 
-# Default values
-model_data = None
 
 model = None
 crop_encoder = None
@@ -16,15 +15,16 @@ demand_encoder = None
 
 
 
-# Load AI model safely
+# =====================================
+# LOAD AI MODEL
+# =====================================
+
 
 if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 0:
 
     try:
 
-        model_data = joblib.load(
-            MODEL_PATH
-        )
+        model_data = joblib.load(MODEL_PATH)
 
 
         model = model_data.get("model")
@@ -53,112 +53,120 @@ if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 0:
             f"⚠️ Model loading failed: {e}"
         )
 
+
         model = None
+
 
 
 else:
 
     print(
-        "⚠️ Market price model not available yet. Forecast disabled."
+        "⚠️ Market price model not available"
     )
 
 
 
 
 
+# =====================================
+# PREDICT PRICE
+# =====================================
+
+
 def predict_market_price(
+
     crop: str,
+
     region: str,
+
     month: int,
+
     rainfall: float,
+
     demand: str
+
 ):
 
 
-    # Check if model exists
-
     if model is None:
 
-        return {
-
-            "status": "model_not_ready",
-
-            "message":
-            "Market price AI model is still being trained. Please try again later."
-
-        }
-
+        raise Exception(
+            "Market price AI model is not ready"
+        )
 
 
 
     try:
 
 
-        # Encode farmer inputs
-
         crop_value = crop_encoder.transform(
+
             [crop]
+
         )[0]
+
 
 
         region_value = region_encoder.transform(
+
             [region]
+
         )[0]
+
 
 
         demand_value = demand_encoder.transform(
+
             [demand]
+
         )[0]
+
 
 
 
         input_data = pd.DataFrame([{
 
 
-            "crop": crop_value,
+            "crop":
+            crop_value,
 
 
-            "region": region_value,
+            "region":
+            region_value,
 
 
-            "month": month,
+            "month":
+            month,
 
 
-            "rainfall": rainfall,
+            "rainfall":
+            rainfall,
 
 
-            "demand": demand_value
+            "demand":
+            demand_value
 
 
         }])
 
 
 
+
         prediction = model.predict(
+
             input_data
+
         )
 
 
 
-        return {
+        return round(
 
+            float(prediction[0]),
 
-            "status": "success",
+            2
 
-
-            "crop": crop,
-
-
-            "region": region,
-
-
-            "predicted_price":
-            round(
-                float(prediction[0]),
-                2
-            )
-
-        }
+        )
 
 
 
@@ -166,12 +174,8 @@ def predict_market_price(
     except Exception as e:
 
 
-        return {
+        raise Exception(
 
+            str(e)
 
-            "status": "error",
-
-
-            "message": str(e)
-
-        }
+        )
