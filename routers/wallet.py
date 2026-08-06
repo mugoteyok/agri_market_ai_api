@@ -105,6 +105,8 @@ async def get_wallet(
 
 
 
+
+
 # =====================================
 # CREATE WALLET
 # =====================================
@@ -201,6 +203,8 @@ async def create_wallet(
 
 
 
+
+
 # =====================================
 # CREDIT FARMER WALLET
 # MARKETPLACE ORDER PAYMENT
@@ -243,44 +247,28 @@ async def credit_wallet(
 
     if not wallet.data:
 
-    supabase.table("wallets").insert({
 
-        "farmer_id": data.farmer_id,
-        "balance": 0,
-        "currency": "UGX"
+        supabase.table("wallets").insert({
 
-    }).execute()
+            "farmer_id":
 
-    current_balance = 0
+            data.farmer_id,
 
 
-        
+            "balance":
 
-        
-
-        
-
-            
-
-            
+            0,
 
 
-            
+            "currency":
 
-        
+            "UGX"
 
-
-            
-
-            
-
-    
-
-        
+        }).execute()
 
 
 
-    
+        current_balance = 0
 
 
 
@@ -318,9 +306,7 @@ async def credit_wallet(
 
 
 
-
     # Update wallet balance
-
 
     supabase.table("wallets").update({
 
@@ -340,10 +326,7 @@ async def credit_wallet(
 
 
 
-
-
     # Save earning transaction
-
 
     transaction = (
 
@@ -392,7 +375,6 @@ async def credit_wallet(
 
 
 
-
     return {
 
 
@@ -413,9 +395,6 @@ async def credit_wallet(
         transaction.data
 
     }
-
-
-
 
 
 
@@ -512,6 +491,7 @@ async def withdraw(
 
 
 
+
     response = (
 
         supabase
@@ -592,6 +572,7 @@ async def withdraw(
 
 
 
+
         supabase.table("wallets").update({
 
             "balance":
@@ -611,7 +592,6 @@ async def withdraw(
 
 
 
-
         return {
 
 
@@ -620,11 +600,14 @@ async def withdraw(
             "Withdrawal processing",
 
 
+
             "withdrawal":
 
             response.data
 
         }
+
+
 
 
 
@@ -653,6 +636,7 @@ async def withdraw(
 
 
 
+
         raise HTTPException(
 
             status_code=500,
@@ -660,6 +644,7 @@ async def withdraw(
             detail=str(e)
 
         )
+
 
 
 
@@ -711,4 +696,4 @@ async def transactions(
 
 
 
-    return response.data
+    return response.data    
