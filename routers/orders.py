@@ -4,8 +4,9 @@ from database import supabase
 
 from schemas.order import OrderCreate
 
-from datetime import datetime
+from schemas.wallet import WalletEarning
 
+from datetime import datetime
 
 
 router = APIRouter()
@@ -64,6 +65,7 @@ async def create_order(
 
 
     product = product_response.data[0]
+
 
 
 
@@ -163,6 +165,7 @@ async def create_order(
 
 
 
+
     order_response = (
 
         supabase
@@ -179,7 +182,10 @@ async def create_order(
 
 
 
-    # Reduce product stock
+
+
+    # Reduce stock
+
 
     remaining_quantity = (
 
@@ -190,6 +196,8 @@ async def create_order(
         order.quantity
 
     )
+
+
 
 
 
@@ -204,10 +212,13 @@ async def create_order(
 
 
 
+
+
     if remaining_quantity <= 0:
 
 
         product_update["status"] = "sold"
+
 
 
 
@@ -223,6 +234,8 @@ async def create_order(
         order.product_id
 
     ).execute()
+
+
 
 
 
@@ -362,7 +375,7 @@ async def complete_order(
 ):
 
 
-    order_response=(
+    order_response = (
 
         supabase
 
@@ -384,6 +397,8 @@ async def complete_order(
 
 
 
+
+
     if not order_response.data:
 
 
@@ -397,7 +412,32 @@ async def complete_order(
 
 
 
+
+
     order = order_response.data[0]
+
+
+
+
+
+
+
+    # Prevent duplicate payment
+
+
+    if order["payment_status"] == "paid":
+
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Order already completed"
+
+        )
+
+
+
 
 
 
@@ -409,13 +449,20 @@ async def complete_order(
     supabase.table("orders").update({
 
 
-        "status":"completed",
+        "status":
+
+        "completed",
 
 
-        "order_status":"completed",
+        "order_status":
+
+        "completed",
 
 
-        "payment_status":"paid"
+        "payment_status":
+
+        "paid"
+
 
 
     }).eq(
@@ -430,60 +477,14 @@ async def complete_order(
 
 
 
-    # Transaction
 
 
-    transaction={
+    # =====================================
+    # CREDIT FARMER WALLET
+    # =====================================
 
 
-        "farmer_id":
-
-        order["farmer_id"],
-
-
-        "amount":
-
-        order["total_amount"],
-
-
-        "type":
-
-        "sale",
-
-
-        "reference_id":
-
-        order_id,
-
-
-        "description":
-
-        f"{order.get('crop')} sale",
-
-
-        "created_at":
-
-        datetime.utcnow().isoformat()
-
-    }
-
-
-
-
-    supabase.table("transactions").insert(
-
-        transaction
-
-    ).execute()
-
-
-
-
-
-    # Update wallet
-
-
-    wallet=(
+    wallet = (
 
         supabase
 
@@ -510,24 +511,43 @@ async def complete_order(
     if wallet.data:
 
 
-        balance = wallet.data[0].get(
+        current_balance = (
 
-            "balance"
+            wallet.data[0]["balance"]
 
-        ) or 0
+            or
+
+            0
+
+        )
+
+
+
+        new_balance = (
+
+            current_balance
+
+            +
+
+            order["total_amount"]
+
+        )
 
 
 
         supabase.table("wallets").update({
 
+
             "balance":
 
-            balance + order["total_amount"],
+            new_balance,
 
 
             "updated_at":
 
             datetime.utcnow().isoformat()
+
+
 
         }).eq(
 
@@ -544,6 +564,7 @@ async def complete_order(
 
         supabase.table("wallets").insert({
 
+
             "farmer_id":
 
             order["farmer_id"],
@@ -558,7 +579,59 @@ async def complete_order(
 
             "UGX"
 
+
+
         }).execute()
+
+
+
+
+
+
+
+    # =====================================
+    # CREATE TRANSACTION RECORD
+    # =====================================
+
+
+    supabase.table("transactions").insert({
+
+
+        "farmer_id":
+
+        order["farmer_id"],
+
+
+        "amount":
+
+        order["total_amount"],
+
+
+        "type":
+
+        "credit",
+
+
+        "reference_id":
+
+        order_id,
+
+
+        "description":
+
+        f"{order.get('crop')} marketplace sale",
+
+
+        "created_at":
+
+        datetime.utcnow().isoformat()
+
+
+
+    }).execute()
+
+
+
 
 
 
@@ -569,6 +642,11 @@ async def complete_order(
         "message":
 
         "Order completed and farmer wallet credited",
+
+
+        "order_id":
+
+        order_id,
 
 
         "amount":
