@@ -16,17 +16,19 @@ router = APIRouter()
 
 # =====================================
 # CREATE PRODUCT LISTING
-# POST /api/marketplace/products
 # =====================================
 
 
 @router.post("/products")
 async def create_product(
+
     product: ProductCreate
+
 ):
 
 
     product_data = {
+
 
         "farmer_id":
         product.farmer_id,
@@ -60,6 +62,14 @@ async def create_product(
         product.image_url,
 
 
+        "predicted_price":
+        product.predicted_price,
+
+
+        "ai_recommendation":
+        product.ai_recommendation,
+
+
         "status":
         "available",
 
@@ -89,10 +99,12 @@ async def create_product(
 
 
         "message":
+
         "Product listed successfully",
 
 
         "product":
+
         response.data
 
     }
@@ -102,8 +114,7 @@ async def create_product(
 
 
 # =====================================
-# GET ALL MARKETPLACE PRODUCTS
-# GET /api/marketplace/products
+# GET AVAILABLE PRODUCTS
 # =====================================
 
 
@@ -111,57 +122,71 @@ async def create_product(
 async def get_products():
 
 
-    response = (
+    try:
 
-        supabase
 
-        .table("products")
+        response = (
 
-        .select("*")
+            supabase
 
-        .eq(
+            .table("products")
 
-            "status",
+            .select("*")
 
-            "available"
+            .eq(
+
+                "status",
+
+                "available"
+
+            )
+
+            .order(
+
+                "created_at",
+
+                desc=True
+
+            )
+
+            .execute()
 
         )
 
-        .order(
 
-            "created_at",
+        return response.data
 
-            desc=True
+
+
+    except Exception as e:
+
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
 
         )
-
-        .execute()
-
-    )
-
-
-
-    return response.data
 
 
 
 
 
 # =====================================
-# GET FARMER PRODUCTS
-# GET /api/marketplace/products/farmer/{farmer_id}
+# FARMER PRODUCTS
 # =====================================
 
 
 @router.get("/products/farmer/{farmer_id}")
 async def farmer_products(
 
-    farmer_id: str
+    farmer_id:str
 
 ):
 
 
-    response = (
+    response=(
 
         supabase
 
@@ -177,18 +202,9 @@ async def farmer_products(
 
         )
 
-        .order(
-
-            "created_at",
-
-            desc=True
-
-        )
-
         .execute()
 
     )
-
 
 
     return response.data
@@ -198,20 +214,19 @@ async def farmer_products(
 
 
 # =====================================
-# GET SINGLE PRODUCT
-# GET /api/marketplace/products/{product_id}
+# SINGLE PRODUCT
 # =====================================
 
 
 @router.get("/products/{product_id}")
 async def get_product(
 
-    product_id: str
+    product_id:str
 
 ):
 
 
-    response = (
+    response=(
 
         supabase
 
@@ -227,12 +242,9 @@ async def get_product(
 
         )
 
-        .single()
-
         .execute()
 
     )
-
 
 
     if not response.data:
@@ -247,41 +259,32 @@ async def get_product(
         )
 
 
-
-    return response.data
+    return response.data[0]
 
 
 
 
 
 # =====================================
-# UPDATE PRODUCT STATUS
-# PUT /api/marketplace/products/{product_id}/status
+# DELETE PRODUCT
 # =====================================
 
 
-@router.put("/products/{product_id}/status")
-async def update_product_status(
+@router.delete("/products/{product_id}")
+async def delete_product(
 
-    product_id: str,
-
-    status: str
+    product_id:str
 
 ):
 
 
-    response = (
+    response=(
 
         supabase
 
         .table("products")
 
-        .update({
-
-            "status":
-            status
-
-        })
+        .delete()
 
         .eq(
 
@@ -296,15 +299,16 @@ async def update_product_status(
     )
 
 
-
     return {
 
 
         "message":
-        "Product status updated",
+
+        "Product deleted successfully",
 
 
         "product":
+
         response.data
 
     }
