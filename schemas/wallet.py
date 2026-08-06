@@ -1,20 +1,41 @@
 from pydantic import BaseModel, Field
+from enum import Enum
+
+
+
+class MobileNetwork(str, Enum):
+
+    MTN = "MTN"
+
+    AIRTEL = "AIRTEL"
 
 
 
 # =====================================
-# WALLET CREATION / EARNINGS
+# CREATE WALLET
 # =====================================
 
 class WalletCreate(BaseModel):
 
     farmer_id: str
 
+
+
+# =====================================
+# ADD EARNINGS
+# =====================================
+
+class WalletEarning(BaseModel):
+
+    farmer_id: str
+
     amount: float = Field(
-        default=0,
-        ge=0,
-        description="Wallet amount"
+        ...,
+        gt=0,
+        description="Amount earned"
     )
+
+    reference_id: str | None = None
 
 
 
@@ -32,6 +53,10 @@ class WithdrawalCreate(BaseModel):
         description="Amount to withdraw"
     )
 
-    mobile_number: str
+    mobile_number: str = Field(
+        ...,
+        min_length=10,
+        max_length=15
+    )
 
-    network: str
+    network: MobileNetwork
