@@ -36,7 +36,8 @@ class WalletEarning(BaseModel):
     )
 
     reference_id: str | None = None
-
+    
+    description: str = "Marketplace sale"
 
 
 # =====================================
