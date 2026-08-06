@@ -16,12 +16,18 @@ class ForecastRequest(BaseModel):
 
 
 
+
+
 class ForecastResponse(BaseModel):
 
     crop: str
 
+    region: str
+
     predicted_price: float
 
-    currency: str = "UGX"
+    currency: str = "UGX/kg"
 
-    confidence: float
+    confidence: float | None = None
+
+    message: str
