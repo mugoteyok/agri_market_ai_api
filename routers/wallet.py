@@ -243,34 +243,44 @@ async def credit_wallet(
 
     if not wallet.data:
 
+    supabase.table("wallets").insert({
 
-        supabase
+        "farmer_id": data.farmer_id,
+        "balance": 0,
+        "currency": "UGX"
 
-        .table("wallets")
+    }).execute()
 
-        .insert({
-
-            "farmer_id":
-
-            data.farmer_id,
-
-
-            "balance":
-
-            0,
+    current_balance = 0
 
 
-            "currency":
+        
 
-            "UGX"
+        
 
-        })
+        
 
-        .execute()
+            
+
+            
+
+
+            
+
+        
+
+
+            
+
+            
+
+    
+
+        
 
 
 
-        current_balance = 0
+    
 
 
 
