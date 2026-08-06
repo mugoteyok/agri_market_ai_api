@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 
+
 class OrderCreate(BaseModel):
 
     product_id: str
@@ -9,6 +10,8 @@ class OrderCreate(BaseModel):
     buyer_id: str
 
     quantity: float
+
+
 
 
 
@@ -25,6 +28,18 @@ class OrderResponse(BaseModel):
     quantity: float
 
     total_amount: float
+
+
+    crop: Optional[str] = None
+
+    price_per_unit: Optional[float] = None
+
+    image_url: Optional[str] = None
+
+
+    payment_status: str
+
+    order_status: str
 
     status: str
 
