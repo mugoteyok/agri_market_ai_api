@@ -10,37 +10,35 @@ from datetime import datetime
 router = APIRouter()
 
 
-# =====================================
+# ============================================================
 # CREATE PRODUCT LISTING
-# =====================================
+# ============================================================
 
 @router.post("/products")
 async def create_product(
     product: ProductCreate
 ):
 
-    # =====================================
+    # ========================================================
     # DETERMINE SELLER
-    # =====================================
+    # ========================================================
 
     seller_id = product.seller_id or product.farmer_id
 
     if not seller_id:
-
         raise HTTPException(
             status_code=400,
             detail="Seller ID is required"
         )
-
 
     seller_type = product.seller_type or "farmer"
 
     product_type = product.product_type or "produce"
 
 
-    # =====================================
+    # ========================================================
     # FARMER COMPATIBILITY
-    # =====================================
+    # ========================================================
 
     # Existing farmer requests only send farmer_id.
     #
@@ -52,7 +50,6 @@ async def create_product(
     if seller_type == "farmer":
 
         if not farmer_id:
-
             farmer_id = seller_id
 
 
@@ -63,9 +60,9 @@ async def create_product(
         farmer_id = None
 
 
-    # =====================================
+    # ========================================================
     # VALIDATE SELLER TYPE
-    # =====================================
+    # ========================================================
 
     if seller_type not in [
         "farmer",
@@ -74,13 +71,16 @@ async def create_product(
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid seller type. Use farmer or supplier."
+            detail=(
+                "Invalid seller type. "
+                "Use farmer or supplier."
+            )
         )
 
 
-    # =====================================
+    # ========================================================
     # VALIDATE PRODUCT TYPE
-    # =====================================
+    # ========================================================
 
     allowed_product_types = [
 
@@ -94,7 +94,9 @@ async def create_product(
 
         "equipment",
 
-        "other_input"
+        "other_input",
+
+        "supply"
 
     ]
 
@@ -106,14 +108,15 @@ async def create_product(
             detail=(
                 "Invalid product type. "
                 "Use produce, seed, fertilizer, "
-                "pesticide, equipment, or other_input."
+                "pesticide, equipment, other_input, "
+                "or supply."
             )
         )
 
 
-    # =====================================
+    # ========================================================
     # SELLER / PRODUCT COMPATIBILITY
-    # =====================================
+    # ========================================================
 
     # Farmers currently sell produce.
 
@@ -121,101 +124,147 @@ async def create_product(
 
         raise HTTPException(
             status_code=400,
-            detail="Farmers can currently list produce only."
+            detail=(
+                "Farmers can currently list "
+                "produce only."
+            )
         )
 
 
-    # Suppliers sell agricultural inputs/equipment.
+    # Suppliers sell agricultural inputs,
+    # equipment and other farm supplies.
 
     if seller_type == "supplier" and product_type == "produce":
 
         raise HTTPException(
             status_code=400,
-            detail="Suppliers should list agricultural inputs or equipment."
+            detail=(
+                "Suppliers should list "
+                "agricultural inputs or equipment."
+            )
         )
 
 
-    # =====================================
-    # CREATE PRODUCT
-    # =====================================
+    # ========================================================
+    # CREATE PRODUCT DATA
+    # ========================================================
 
     product_data = {
 
+        # Existing farmer architecture
         "farmer_id":
-        farmer_id,
+            farmer_id,
 
+        # Seller architecture
         "seller_id":
-        seller_id,
+            seller_id,
 
         "seller_type":
-        seller_type,
+            seller_type,
 
         "product_type":
-        product_type,
+            product_type,
 
+        # Existing product fields
         "crop":
-        product.crop,
+            product.crop,
 
         "description":
-        product.description,
+            product.description,
 
         "quantity":
-        product.quantity,
+            product.quantity,
 
         "unit":
-        product.unit,
+            product.unit,
 
         "price_per_unit":
-        product.price_per_unit,
+            product.price_per_unit,
 
         "region":
-        product.region,
+            product.region,
 
         "image_url":
-        product.image_url,
+            product.image_url,
 
+        # AI market intelligence
         "predicted_price":
-        product.predicted_price,
+            product.predicted_price,
 
         "ai_recommendation":
-        product.ai_recommendation,
+            product.ai_recommendation,
 
+        # Farm Supplies
+        "product_name":
+            product.product_name,
+
+        "category":
+            product.category,
+
+        "brand":
+            product.brand,
+
+        "availability":
+            product.availability or "in_stock",
+
+        "rating":
+            product.rating or 0,
+
+        "supplier_location":
+            product.supplier_location,
+
+        # Existing status
         "status":
-        "available",
+            "available",
 
         "created_at":
-        datetime.utcnow().isoformat()
-
+            datetime.utcnow().isoformat()
     }
 
 
-    response = (
+    # ========================================================
+    # INSERT INTO SUPABASE
+    # ========================================================
 
-        supabase
+    try:
 
-        .table("products")
+        response = (
 
-        .insert(product_data)
+            supabase
 
-        .execute()
+            .table("products")
 
-    )
+            .insert(product_data)
+
+            .execute()
+
+        )
+
+        return {
+
+            "message":
+                "Product listed successfully",
+
+            "product":
+                response.data
+
+        }
 
 
-    return {
+    except Exception as e:
 
-        "message":
-        "Product listed successfully",
+        raise HTTPException(
 
-        "product":
-        response.data
+            status_code=500,
 
-    }
+            detail=str(e)
+
+        )
 
 
-# =====================================
+# ============================================================
 # GET AVAILABLE PRODUCTS
-# =====================================
+# ============================================================
 
 @router.get("/products")
 async def get_products():
@@ -250,157 +299,318 @@ async def get_products():
     except Exception as e:
 
         raise HTTPException(
+
             status_code=500,
+
             detail=str(e)
+
         )
 
 
-# =====================================
-# FARMER PRODUCTS
-# =====================================
+# ============================================================
+# GET PRODUCE PRODUCTS
+# ============================================================
+
+@router.get("/products/produce")
+async def get_produce_products():
+
+    try:
+
+        response = (
+
+            supabase
+
+            .table("products")
+
+            .select("*")
+
+            .eq(
+                "status",
+                "available"
+            )
+
+            .eq(
+                "product_type",
+                "produce"
+            )
+
+            .order(
+                "created_at",
+                desc=True
+            )
+
+            .execute()
+
+        )
+
+        return response.data
+
+
+    except Exception as e:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
+        )
+
+
+# ============================================================
+# GET FARM SUPPLIES
+# ============================================================
+
+@router.get("/products/supplies")
+async def get_farm_supplies():
+
+    try:
+
+        response = (
+
+            supabase
+
+            .table("products")
+
+            .select("*")
+
+            .eq(
+                "status",
+                "available"
+            )
+
+            .eq(
+                "product_type",
+                "supply"
+            )
+
+            .order(
+                "created_at",
+                desc=True
+            )
+
+            .execute()
+
+        )
+
+        return response.data
+
+
+    except Exception as e:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
+        )
+
+
+# ============================================================
+# GET FARMER PRODUCTS
+# ============================================================
 
 @router.get("/products/farmer/{farmer_id}")
 async def farmer_products(
     farmer_id: str
 ):
 
-    response = (
+    try:
 
-        supabase
+        response = (
 
-        .table("products")
+            supabase
 
-        .select("*")
+            .table("products")
 
-        .eq(
-            "farmer_id",
-            farmer_id
+            .select("*")
+
+            .eq(
+                "farmer_id",
+                farmer_id
+            )
+
+            .order(
+                "created_at",
+                desc=True
+            )
+
+            .execute()
+
         )
 
-        .order(
-            "created_at",
-            desc=True
+        return response.data
+
+
+    except Exception as e:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
         )
 
-        .execute()
 
-    )
-
-
-    return response.data
-
-
-# =====================================
-# SUPPLIER PRODUCTS
-# =====================================
+# ============================================================
+# GET SUPPLIER PRODUCTS
+# ============================================================
 
 @router.get("/products/supplier/{supplier_id}")
 async def supplier_products(
     supplier_id: str
 ):
 
-    response = (
+    try:
 
-        supabase
+        response = (
 
-        .table("products")
+            supabase
 
-        .select("*")
+            .table("products")
 
-        .eq(
-            "seller_id",
-            supplier_id
+            .select("*")
+
+            .eq(
+                "seller_id",
+                supplier_id
+            )
+
+            .eq(
+                "seller_type",
+                "supplier"
+            )
+
+            .order(
+                "created_at",
+                desc=True
+            )
+
+            .execute()
+
         )
 
-        .eq(
-            "seller_type",
-            "supplier"
+        return response.data
+
+
+    except Exception as e:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
         )
 
-        .order(
-            "created_at",
-            desc=True
-        )
 
-        .execute()
-
-    )
-
-
-    return response.data
-
-
-# =====================================
+# ============================================================
 # SINGLE PRODUCT
-# =====================================
+# ============================================================
 
 @router.get("/products/{product_id}")
 async def get_product(
     product_id: str
 ):
 
-    response = (
+    try:
 
-        supabase
+        response = (
 
-        .table("products")
+            supabase
 
-        .select("*")
+            .table("products")
 
-        .eq(
-            "id",
-            product_id
+            .select("*")
+
+            .eq(
+                "id",
+                product_id
+            )
+
+            .execute()
+
         )
 
-        .execute()
 
-    )
+        if not response.data:
+
+            raise HTTPException(
+
+                status_code=404,
+
+                detail="Product not found"
+
+            )
 
 
-    if not response.data:
+        return response.data[0]
+
+
+    except HTTPException:
+
+        raise
+
+
+    except Exception as e:
 
         raise HTTPException(
-            status_code=404,
-            detail="Product not found"
+
+            status_code=500,
+
+            detail=str(e)
+
         )
 
 
-    return response.data[0]
-
-
-# =====================================
+# ============================================================
 # DELETE PRODUCT
-# =====================================
+# ============================================================
 
 @router.delete("/products/{product_id}")
 async def delete_product(
     product_id: str
 ):
 
-    response = (
+    try:
 
-        supabase
+        response = (
 
-        .table("products")
+            supabase
 
-        .delete()
+            .table("products")
 
-        .eq(
-            "id",
-            product_id
+            .delete()
+
+            .eq(
+                "id",
+                product_id
+            )
+
+            .execute()
+
         )
 
-        .execute()
 
-    )
+        return {
+
+            "message":
+                "Product deleted successfully",
+
+            "product":
+                response.data
+
+        }
 
 
-    return {
+    except Exception as e:
 
-        "message":
-        "Product deleted successfully",
+        raise HTTPException(
 
-        "product":
-        response.data
+            status_code=500,
 
-    }
+            detail=str(e)
+
+        )
