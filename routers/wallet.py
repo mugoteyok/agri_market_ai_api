@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, HTTPException
 
 from database import supabase
@@ -102,12 +103,10 @@ async def get_wallet(
 #
 # GET /api/marketplace/wallet/seller/{seller_id}
 #
-# Optional query:
+# Optional:
 #
 # ?seller_type=farmer
 # ?seller_type=supplier
-#
-# If seller_type is omitted, the endpoint searches by seller_id.
 # ============================================================
 
 @router.get("/wallet/seller/{seller_id}")
@@ -128,6 +127,8 @@ async def get_seller_wallet(
 
 
     if seller_type:
+
+        seller_type = seller_type.lower()
 
         if seller_type not in [
             "farmer",
@@ -212,9 +213,7 @@ async def get_seller_wallet(
 
 
 # ============================================================
-# CREATE WALLET
-#
-# Existing farmer wallet endpoint.
+# CREATE FARMER WALLET
 #
 # POST /api/marketplace/wallet/create
 # ============================================================
@@ -398,13 +397,11 @@ async def create_seller_wallet(
 # ============================================================
 # CREDIT FARMER WALLET
 #
-# Existing endpoint retained.
-#
 # POST /api/marketplace/wallet/credit
 #
-# NOTE:
 # Marketplace order completion should use the complete-order
 # endpoint rather than calling this endpoint separately.
+#
 # This prevents double wallet credits.
 # ============================================================
 
@@ -510,7 +507,7 @@ async def credit_wallet(
 
 
     # --------------------------------------------------------
-    # SAVE TRANSACTION
+    # SAVE CREDIT TRANSACTION
     # --------------------------------------------------------
 
     transaction = (
@@ -565,9 +562,16 @@ async def credit_wallet(
 # ============================================================
 # WITHDRAW MONEY
 #
-# Existing farmer withdrawal flow retained.
+# Works with:
+#
+# Farmer wallets
+# Supplier wallets
 #
 # POST /api/marketplace/wallet/withdraw
+#
+# The WithdrawalCreate schema still uses farmer_id for
+# backward compatibility. We use that value as the seller ID
+# when looking up the wallet.
 # ============================================================
 
 @router.post("/wallet/withdraw")
@@ -575,19 +579,69 @@ async def withdraw(
     data: WithdrawalCreate
 ):
 
-    wallet = (
+    # ========================================================
+    # GET WALLET
+    #
+    # First search by seller_id.
+    #
+    # This allows supplier wallets to withdraw because supplier
+    # wallets have:
+    #
+    # seller_id = supplier UUID
+    # seller_type = supplier
+    # farmer_id = NULL
+    #
+    # Then fall back to farmer_id for older farmer wallets.
+    # ========================================================
+
+    wallet_response = (
         supabase
         .table("wallets")
         .select("*")
         .eq(
-            "farmer_id",
+            "seller_id",
             data.farmer_id
         )
         .execute()
     )
 
 
-    if not wallet.data:
+    wallet = None
+
+
+    if wallet_response.data:
+
+        wallet = wallet_response.data[0]
+
+
+    # --------------------------------------------------------
+    # FALLBACK FOR OLD FARMER WALLETS
+    # --------------------------------------------------------
+
+    if wallet is None:
+
+        old_wallet_response = (
+            supabase
+            .table("wallets")
+            .select("*")
+            .eq(
+                "farmer_id",
+                data.farmer_id
+            )
+            .execute()
+        )
+
+
+        if old_wallet_response.data:
+
+            wallet = old_wallet_response.data[0]
+
+
+    # --------------------------------------------------------
+    # WALLET NOT FOUND
+    # --------------------------------------------------------
+
+    if wallet is None:
 
         raise HTTPException(
             status_code=404,
@@ -595,21 +649,46 @@ async def withdraw(
         )
 
 
+    # ========================================================
+    # WALLET DETAILS
+    # ========================================================
+
     balance = float(
-        wallet.data[0].get("balance")
+        wallet.get("balance")
         or 0
     )
 
 
-    if float(data.amount) <= 0:
+    seller_id = (
+        wallet.get("seller_id")
+        or data.farmer_id
+    )
+
+
+    seller_type = (
+        wallet.get("seller_type")
+        or "farmer"
+    )
+
+
+    # ========================================================
+    # CHECK AMOUNT
+    # ========================================================
+
+    amount = float(
+        data.amount
+    )
+
+
+    if amount <= 0:
 
         raise HTTPException(
             status_code=400,
-            detail="Withdrawal amount must be greater than zero."
+            detail="Withdrawal amount must be greater than zero"
         )
 
 
-    if float(data.amount) > balance:
+    if amount > balance:
 
         raise HTTPException(
             status_code=400,
@@ -617,10 +696,21 @@ async def withdraw(
         )
 
 
+    # ========================================================
+    # CREATE WITHDRAWAL ID
+    # ========================================================
+
     transaction_id = str(
         uuid.uuid4()
     )
 
+
+    now = datetime.utcnow().isoformat()
+
+
+    # ========================================================
+    # CREATE WITHDRAWAL RECORD
+    # ========================================================
 
     response = (
         supabase
@@ -631,7 +721,7 @@ async def withdraw(
                 data.farmer_id,
 
             "amount":
-                data.amount,
+                amount,
 
             "phone_number":
                 data.mobile_number,
@@ -646,21 +736,35 @@ async def withdraw(
                 "processing",
 
             "created_at":
-                datetime.utcnow().isoformat()
+                now
         })
         .execute()
     )
 
 
+    if not response.data:
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create withdrawal record."
+        )
+
+
+    # ========================================================
+    # SEND MOBILE MONEY
+    # ========================================================
+
     try:
 
         mtn = transfer_money(
 
-            amount=data.amount,
+            amount=amount,
 
-            phone_number=data.mobile_number,
+            phone_number=
+                data.mobile_number,
 
-            external_id=transaction_id
+            external_id=
+                transaction_id
         )
 
 
@@ -674,18 +778,19 @@ async def withdraw(
             )
 
 
-        # ----------------------------------------------------
-        # DEDUCT WALLET
-        # ----------------------------------------------------
+        # ====================================================
+        # UPDATE WALLET BALANCE
+        # ====================================================
 
         new_balance = (
             balance -
-            float(data.amount)
+            amount
         )
 
 
-        supabase \
-            .table("wallets") \
+        wallet_update = (
+            supabase
+            .table("wallets")
             .update({
 
                 "balance":
@@ -694,33 +799,58 @@ async def withdraw(
                 "updated_at":
                     datetime.utcnow().isoformat()
 
-            }) \
-            .eq(
-                "farmer_id",
-                data.farmer_id
-            ) \
-            .execute()
+            })
+        )
 
 
         # ----------------------------------------------------
-        # CREATE WITHDRAWAL TRANSACTION
+        # Update using wallet ID when available.
         # ----------------------------------------------------
 
-        supabase \
-            .table("transactions") \
+        if wallet.get("id") is not None:
+
+            wallet_update = wallet_update.eq(
+                "id",
+                wallet["id"]
+            )
+
+        else:
+
+            wallet_update = wallet_update.eq(
+                "seller_id",
+                seller_id
+            )
+
+
+        wallet_update.execute()
+
+
+        # ====================================================
+        # CREATE DEBIT TRANSACTION
+        #
+        # This is the important addition.
+        #
+        # Withdrawals now appear in the transaction history.
+        # ====================================================
+
+        transaction = (
+            supabase
+            .table("transactions")
             .insert({
 
                 "farmer_id":
-                    data.farmer_id,
+                    data.farmer_id
+                    if seller_type == "farmer"
+                    else None,
 
                 "seller_id":
-                    data.farmer_id,
+                    seller_id,
 
                 "seller_type":
-                    "farmer",
+                    seller_type,
 
                 "amount":
-                    data.amount,
+                    amount,
 
                 "type":
                     "debit",
@@ -732,27 +862,57 @@ async def withdraw(
                     transaction_id,
 
                 "description":
-                    "Wallet withdrawal",
+                    "Mobile money withdrawal",
 
                 "created_at":
-                    datetime.utcnow().isoformat()
+                    now
+            })
+            .execute()
+        )
+
+
+        # ====================================================
+        # MARK WITHDRAWAL COMPLETED
+        # ====================================================
+
+        supabase \
+            .table("withdrawals") \
+            .update({
+
+                "status":
+                    "completed"
 
             }) \
+            .eq(
+                "transaction_id",
+                transaction_id
+            ) \
             .execute()
 
+
+        # ====================================================
+        # RESPONSE
+        # ====================================================
 
         return {
 
             "message":
-                "Withdrawal processing",
+                "Withdrawal completed successfully",
+
+            "new_balance":
+                new_balance,
 
             "withdrawal":
                 response.data,
 
-            "new_balance":
-                new_balance
+            "transaction":
+                transaction.data
         }
 
+
+    # ========================================================
+    # WITHDRAWAL FAILED
+    # ========================================================
 
     except Exception as e:
 
@@ -785,6 +945,12 @@ async def withdraw(
 # Existing endpoint retained.
 #
 # GET /api/marketplace/transactions/{farmer_id}
+#
+# Includes:
+#
+# - Marketplace earnings
+# - Wallet credits
+# - Wallet withdrawals
 # ============================================================
 
 @router.get("/transactions/{farmer_id}")
@@ -825,6 +991,8 @@ async def transactions(
 #
 # ?seller_type=farmer
 # ?seller_type=supplier
+#
+# This is the endpoint the SupplierWalletScreen should use.
 # ============================================================
 
 @router.get("/transactions/seller/{seller_id}")
@@ -877,3 +1045,4 @@ async def seller_transactions(
 
 
     return response.data
+
