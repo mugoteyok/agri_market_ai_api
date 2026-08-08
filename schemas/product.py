@@ -1,4 +1,4 @@
-```python
+
 from pydantic import BaseModel
 from typing import Optional
 
@@ -268,4 +268,4 @@ class ProductResponse(BaseModel):
     status: str
 
     created_at: str
-```
+
