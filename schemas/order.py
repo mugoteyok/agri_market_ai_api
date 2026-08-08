@@ -2,6 +2,9 @@ from pydantic import BaseModel
 from typing import Optional
 
 
+# =====================================
+# CREATE ORDER
+# =====================================
 
 class OrderCreate(BaseModel):
 
@@ -12,8 +15,9 @@ class OrderCreate(BaseModel):
     quantity: float
 
 
-
-
+# =====================================
+# ORDER RESPONSE
+# =====================================
 
 class OrderResponse(BaseModel):
 
@@ -23,12 +27,15 @@ class OrderResponse(BaseModel):
 
     buyer_id: str
 
-    farmer_id: str
+    farmer_id: Optional[str] = None
+
+    seller_id: Optional[str] = None
+
+    seller_type: Optional[str] = None
 
     quantity: float
 
     total_amount: float
-
 
     crop: Optional[str] = None
 
@@ -36,11 +43,14 @@ class OrderResponse(BaseModel):
 
     image_url: Optional[str] = None
 
-
     payment_status: str
 
     order_status: str
 
-    status: str
+    status: Optional[str] = None
+
+    payment_method: Optional[str] = None
+
+    accepted_at: Optional[str] = None
 
     created_at: str
