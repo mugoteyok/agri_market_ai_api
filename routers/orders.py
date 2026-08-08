@@ -887,7 +887,16 @@ async def complete_order(
     amount = float(
         order["total_amount"]
     )
+    # --------------------------------------------------------
+    # ONLY ACCEPTED ORDERS CAN BE COMPLETED
+    # --------------------------------------------------------
 
+    if order["order_status"] != "accepted":
+
+    raise HTTPException(
+        status_code=400,
+        detail="Only accepted orders can be completed."
+    )
 
     # --------------------------------------------------------
     # UPDATE ORDER FIRST
