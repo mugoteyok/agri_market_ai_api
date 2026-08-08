@@ -1,9 +1,19 @@
+```python
 from pydantic import BaseModel
 from typing import Optional
 
 
 # =====================================
 # CREATE ORDER
+# =====================================
+#
+# The buyer only provides:
+# - product
+# - buyer
+# - quantity
+#
+# Seller information is automatically
+# obtained from the products table.
 # =====================================
 
 class OrderCreate(BaseModel):
@@ -27,15 +37,37 @@ class OrderResponse(BaseModel):
 
     buyer_id: str
 
+    # =====================================
+    # FARMER / SELLER
+    # =====================================
+
     farmer_id: Optional[str] = None
 
     seller_id: Optional[str] = None
 
     seller_type: Optional[str] = None
 
+    # =====================================
+    # PRODUCT TYPE
+    # =====================================
+
+    # produce = maize, coffee, beans, etc.
+    # supply  = pesticides, fertilizer,
+    #           seeds, equipment, etc.
+
+    product_type: Optional[str] = "produce"
+
+    # =====================================
+    # ORDER INFORMATION
+    # =====================================
+
     quantity: float
 
     total_amount: float
+
+    # =====================================
+    # PRODUCT INFORMATION
+    # =====================================
 
     crop: Optional[str] = None
 
@@ -43,14 +75,27 @@ class OrderResponse(BaseModel):
 
     image_url: Optional[str] = None
 
+    # =====================================
+    # PAYMENT
+    # =====================================
+
     payment_status: str
+
+    payment_method: Optional[str] = None
+
+    # =====================================
+    # ORDER STATUS
+    # =====================================
 
     order_status: str
 
     status: Optional[str] = None
 
-    payment_method: Optional[str] = None
-
     accepted_at: Optional[str] = None
 
+    # =====================================
+    # DATE
+    # =====================================
+
     created_at: str
+```
