@@ -2,11 +2,28 @@ from pydantic import BaseModel
 from typing import Optional
 
 
-
 class ProductCreate(BaseModel):
 
-    farmer_id: str
+    # =====================================
+    # SELLER
+    # =====================================
 
+    # Kept for existing farmer marketplace
+    farmer_id: Optional[str] = None
+
+    # New universal seller fields
+    seller_id: Optional[str] = None
+    seller_type: Optional[str] = "farmer"
+
+    # produce / seed / fertilizer / pesticide / equipment / other_input
+    product_type: Optional[str] = "produce"
+
+
+    # =====================================
+    # PRODUCT
+    # =====================================
+
+    # Kept as "crop" for backward compatibility
     crop: str
 
     description: Optional[str] = ""
@@ -22,39 +39,44 @@ class ProductCreate(BaseModel):
     image_url: Optional[str] = None
 
 
+    # =====================================
     # AI MARKET INTELLIGENCE
+    # =====================================
 
     predicted_price: Optional[float] = None
 
     ai_recommendation: Optional[str] = None
 
 
-
-
-
 class ProductResponse(BaseModel):
 
     id: str
 
-    farmer_id: str
+    farmer_id: Optional[str] = None
+
+    seller_id: Optional[str] = None
+
+    seller_type: Optional[str] = None
+
+    product_type: Optional[str] = None
 
     crop: str
 
-    description: Optional[str]
+    description: Optional[str] = None
 
     quantity: float
 
     unit: str
 
-    price_per_unit: float
+    price_per_unit: Optional[float] = None
 
-    region: str
+    region: Optional[str] = None
 
-    image_url: Optional[str]
+    image_url: Optional[str] = None
 
-    predicted_price: Optional[float]
+    predicted_price: Optional[float] = None
 
-    ai_recommendation: Optional[str]
+    ai_recommendation: Optional[str] = None
 
     status: str
 
