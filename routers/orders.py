@@ -3,9 +3,6 @@ from fastapi import APIRouter, HTTPException
 from database import supabase
 
 from schemas.order import OrderCreate
-
-from schemas.wallet import WalletEarning
-
 from schemas.payment import PaymentRequest
 
 from datetime import datetime
@@ -14,24 +11,37 @@ from datetime import datetime
 router = APIRouter()
 
 
-# =====================================
+# ============================================================
 # CREATE ORDER
 # POST /api/marketplace/orders
 #
 # Works for:
-# 🌾 Farmer → produce
-# 🏪 Supplier → seeds, pesticides,
-#    fertilizer, equipment, etc.
-# =====================================
+#
+# Farmer selling produce
+# Supplier selling farm supplies
+#
+# Examples:
+# produce:
+#   maize
+#   coffee
+#   beans
+#   cassava
+#
+# supplies:
+#   seeds
+#   pesticides
+#   fertilizer
+#   equipment
+# ============================================================
 
 @router.post("/orders")
 async def create_order(
     order: OrderCreate
 ):
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # GET PRODUCT
-    # ---------------------------------
+    # --------------------------------------------------------
 
     product_response = (
         supabase
@@ -54,11 +64,11 @@ async def create_order(
     product = product_response.data[0]
 
 
-    # ---------------------------------
-    # CHECK AVAILABILITY
-    # ---------------------------------
+    # --------------------------------------------------------
+    # CHECK PRODUCT STATUS
+    # --------------------------------------------------------
 
-    if product["status"] != "available":
+    if product.get("status") != "available":
 
         raise HTTPException(
             status_code=400,
@@ -66,9 +76,9 @@ async def create_order(
         )
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # CHECK QUANTITY
-    # ---------------------------------
+    # --------------------------------------------------------
 
     if order.quantity <= 0:
 
@@ -78,7 +88,7 @@ async def create_order(
         )
 
 
-    if order.quantity > product["quantity"]:
+    if order.quantity > float(product["quantity"]):
 
         raise HTTPException(
             status_code=400,
@@ -86,9 +96,9 @@ async def create_order(
         )
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # DETERMINE SELLER
-    # ---------------------------------
+    # --------------------------------------------------------
 
     seller_id = (
         product.get("seller_id")
@@ -114,16 +124,29 @@ async def create_order(
         )
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
+    # VALIDATE SELLER TYPE
+    # --------------------------------------------------------
+
+    if seller_type not in [
+        "farmer",
+        "supplier"
+    ]:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid seller type"
+        )
+
+
+    # --------------------------------------------------------
     # PRICE
-    # ---------------------------------
+    # --------------------------------------------------------
+
+    quantity = float(order.quantity)
 
     price_per_unit = float(
         product["price_per_unit"]
-    )
-
-    quantity = float(
-        order.quantity
     )
 
     total_amount = (
@@ -132,15 +155,14 @@ async def create_order(
     )
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # FARMER COMPATIBILITY
     #
-    # Existing farmer products/orders
-    # continue to use farmer_id.
+    # Existing farmer orders use farmer_id.
     #
-    # Supplier products have farmer_id
-    # set to NULL.
-    # ---------------------------------
+    # Supplier orders use seller_id and do not
+    # need farmer_id.
+    # --------------------------------------------------------
 
     farmer_id = None
 
@@ -149,56 +171,59 @@ async def create_order(
         farmer_id = seller_id
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # CREATE ORDER
-    # ---------------------------------
+    # --------------------------------------------------------
 
     new_order = {
 
         "buyer_id":
-        order.buyer_id,
+            order.buyer_id,
 
         "farmer_id":
-        farmer_id,
+            farmer_id,
 
         "seller_id":
-        seller_id,
+            seller_id,
 
         "seller_type":
-        seller_type,
+            seller_type,
+
+        "product_type":
+            product_type,
 
         "product_id":
-        order.product_id,
+            order.product_id,
 
         "crop":
-        product.get("crop"),
+            product.get("crop"),
 
         "price_per_unit":
-        price_per_unit,
+            price_per_unit,
 
         "image_url":
-        product.get("image_url"),
+            product.get("image_url"),
 
         "quantity":
-        quantity,
+            quantity,
 
         "total_amount":
-        total_amount,
+            total_amount,
 
         "payment_status":
-        "pending",
+            "pending",
 
         "payment_method":
-        "Mobile Money",
+            "Mobile Money",
 
         "order_status":
-        "placed",
+            "placed",
 
         "status":
-        "pending",
+            "pending",
 
         "created_at":
-        datetime.utcnow().isoformat()
+            datetime.utcnow().isoformat()
     }
 
 
@@ -218,9 +243,9 @@ async def create_order(
         )
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # REDUCE PRODUCT STOCK
-    # ---------------------------------
+    # --------------------------------------------------------
 
     remaining_quantity = (
         float(product["quantity"])
@@ -231,7 +256,7 @@ async def create_order(
     product_update = {
 
         "quantity":
-        remaining_quantity
+            remaining_quantity
     }
 
 
@@ -242,29 +267,37 @@ async def create_order(
         product_update["status"] = "sold"
 
 
-    supabase.table(
-        "products"
-    ).update(
-        product_update
-    ).eq(
-        "id",
-        order.product_id
-    ).execute()
+    supabase \
+        .table("products") \
+        .update(product_update) \
+        .eq(
+            "id",
+            order.product_id
+        ) \
+        .execute()
 
+
+    # --------------------------------------------------------
+    # RESPONSE
+    # --------------------------------------------------------
 
     return {
 
         "message":
-        "Order created successfully",
+            "Order created successfully",
 
         "order":
-        order_response.data[0]
+            order_response.data[0]
     }
 
 
-# =====================================
+# ============================================================
 # FARMER ORDERS
-# =====================================
+#
+# Farmer receives orders for produce.
+#
+# Kept for backward compatibility.
+# ============================================================
 
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
@@ -293,16 +326,17 @@ async def farmer_orders(
     return response.data
 
 
-# =====================================
+# ============================================================
 # SUPPLIER ORDERS
 #
-# Incoming orders for:
+# Supplier receives orders for:
+#
 # seeds
 # pesticides
 # fertilizer
 # equipment
-# other agricultural inputs
-# =====================================
+# other farm inputs
+# ============================================================
 
 @router.get("/orders/supplier/{supplier_id}")
 async def supplier_orders(
@@ -331,9 +365,48 @@ async def supplier_orders(
     return response.data
 
 
-# =====================================
+# ============================================================
+# GENERIC SELLER ORDERS
+#
+# Works for BOTH:
+#
+# farmer
+# supplier
+#
+# GET /orders/seller/{seller_id}
+# ============================================================
+
+@router.get("/orders/seller/{seller_id}")
+async def seller_orders(
+    seller_id: str
+):
+
+    response = (
+        supabase
+        .table("orders")
+        .select("*")
+        .eq(
+            "seller_id",
+            seller_id
+        )
+        .order(
+            "created_at",
+            desc=True
+        )
+        .execute()
+    )
+
+    return response.data
+
+
+# ============================================================
 # BUYER ORDERS
-# =====================================
+#
+# Used when:
+#
+# Farmer buys supplies
+# Buyer buys produce
+# ============================================================
 
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
@@ -358,9 +431,9 @@ async def buyer_orders(
     return response.data
 
 
-# =====================================
+# ============================================================
 # GET SINGLE ORDER
-# =====================================
+# ============================================================
 
 @router.get("/orders/{order_id}")
 async def get_order_details(
@@ -390,10 +463,11 @@ async def get_order_details(
     return response.data[0]
 
 
-# =====================================
+# ============================================================
 # PAY ORDER
+#
 # POST /orders/{order_id}/payment
-# =====================================
+# ============================================================
 
 @router.post("/orders/{order_id}/payment")
 async def pay_order(
@@ -432,41 +506,43 @@ async def pay_order(
         )
 
 
-    supabase.table(
-        "orders"
-    ).update({
+    supabase \
+        .table("orders") \
+        .update({
 
-        "payment_status":
-        "paid",
+            "payment_status":
+                "paid",
 
-        "payment_method":
-        payment.payment_method
+            "payment_method":
+                payment.payment_method
 
-    }).eq(
-        "id",
-        order_id
-    ).execute()
+        }) \
+        .eq(
+            "id",
+            order_id
+        ) \
+        .execute()
 
 
     return {
 
         "message":
-        "Payment successful",
+            "Payment successful",
 
         "order_id":
-        order_id,
+            order_id,
 
         "payment_status":
-        "paid",
+            "paid",
 
         "payment_method":
-        payment.payment_method
+            payment.payment_method
     }
 
 
-# =====================================
+# ============================================================
 # CANCEL ORDER
-# =====================================
+# ============================================================
 
 @router.put("/orders/{order_id}/cancel")
 async def cancel_order(
@@ -504,32 +580,39 @@ async def cancel_order(
         )
 
 
-    supabase.table(
-        "orders"
-    ).update({
+    supabase \
+        .table("orders") \
+        .update({
 
-        "order_status":
-        "cancelled",
+            "order_status":
+                "cancelled",
 
-        "status":
-        "cancelled"
+            "status":
+                "cancelled"
 
-    }).eq(
-        "id",
-        order_id
-    ).execute()
+        }) \
+        .eq(
+            "id",
+            order_id
+        ) \
+        .execute()
 
 
     return {
 
         "message":
-        "Order cancelled successfully"
+            "Order cancelled successfully"
     }
 
 
-# =====================================
+# ============================================================
 # ACCEPT ORDER
-# =====================================
+#
+# Works for:
+#
+# Farmer seller
+# Supplier seller
+# ============================================================
 
 @router.put("/orders/{order_id}/accept")
 async def accept_order(
@@ -567,44 +650,45 @@ async def accept_order(
         )
 
 
-    supabase.table(
-        "orders"
-    ).update({
+    supabase \
+        .table("orders") \
+        .update({
 
-        "order_status":
-        "accepted",
+            "order_status":
+                "accepted",
 
-        "status":
-        "accepted",
+            "status":
+                "accepted",
 
-        "accepted_at":
-        datetime.utcnow().isoformat()
+            "accepted_at":
+                datetime.utcnow().isoformat()
 
-    }).eq(
-        "id",
-        order_id
-    ).execute()
+        }) \
+        .eq(
+            "id",
+            order_id
+        ) \
+        .execute()
 
 
     return {
 
         "message":
-        "Order accepted successfully",
+            "Order accepted successfully",
 
         "order_id":
-        order_id,
+            order_id,
 
         "order_status":
-        "accepted"
+            "accepted"
     }
 
 
-# =====================================
+# ============================================================
 # UPDATE ORDER STATUS
 #
-# Allows seller to move an order
-# through the marketplace workflow.
-# =====================================
+# Generic seller status update.
+# ============================================================
 
 @router.put("/orders/{order_id}/status")
 async def update_order_status(
@@ -620,6 +704,9 @@ async def update_order_status(
         "completed",
         "cancelled"
     ]
+
+
+    status = status.lower()
 
 
     if status not in allowed_statuses:
@@ -653,38 +740,65 @@ async def update_order_status(
         )
 
 
-    supabase.table(
-        "orders"
-    ).update({
+    # Do not allow generic status update
+    # to bypass payment/completion logic.
 
-        "order_status":
-        status,
+    if status == "completed":
 
-        "status":
-        status
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Use the complete order endpoint "
+                "to complete an order."
+            )
+        )
 
-    }).eq(
-        "id",
-        order_id
-    ).execute()
+
+    supabase \
+        .table("orders") \
+        .update({
+
+            "order_status":
+                status,
+
+            "status":
+                status
+
+        }) \
+        .eq(
+            "id",
+            order_id
+        ) \
+        .execute()
 
 
     return {
 
         "message":
-        "Order status updated successfully",
+            "Order status updated successfully",
 
         "order_id":
-        order_id,
+            order_id,
 
         "order_status":
-        status
+            status
     }
 
 
-# =====================================
+# ============================================================
 # COMPLETE ORDER
-# =====================================
+#
+# This is where the seller gets paid.
+#
+# Farmer:
+#   farmer wallet credited
+#
+# Supplier:
+#   supplier wallet credited
+#
+# Both:
+#   transaction created
+# ============================================================
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
@@ -714,21 +828,23 @@ async def complete_order(
     order = order_response.data[0]
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # PAYMENT CHECK
-    # ---------------------------------
+    # --------------------------------------------------------
 
     if order["payment_status"] != "paid":
 
         raise HTTPException(
             status_code=400,
-            detail="Buyer has not completed payment."
+            detail=(
+                "Buyer has not completed payment."
+            )
         )
 
 
-    # ---------------------------------
+    # --------------------------------------------------------
     # PREVENT DUPLICATE COMPLETION
-    # ---------------------------------
+    # --------------------------------------------------------
 
     if order["order_status"] == "completed":
 
@@ -738,198 +854,311 @@ async def complete_order(
         )
 
 
-    # ---------------------------------
-    # UPDATE ORDER
-    # ---------------------------------
+    seller_id = (
+        order.get("seller_id")
+        or order.get("farmer_id")
+    )
 
-    supabase.table(
-        "orders"
-    ).update({
-
-        "status":
-        "completed",
-
-        "order_status":
-        "completed"
-
-    }).eq(
-        "id",
-        order_id
-    ).execute()
+    seller_type = (
+        order.get("seller_type")
+        or "farmer"
+    )
 
 
-    # =================================
-    # FARMER SALE
-    # =================================
+    if not seller_id:
 
-    if order.get("seller_type") == "farmer":
-
-        farmer_id = (
-            order.get("seller_id")
-            or order.get("farmer_id")
+        raise HTTPException(
+            status_code=400,
+            detail="Seller ID is missing."
         )
 
 
-        if not farmer_id:
+    if seller_type not in [
+        "farmer",
+        "supplier"
+    ]:
 
-            raise HTTPException(
-                status_code=400,
-                detail="Farmer seller ID is missing"
-            )
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid seller type."
+        )
 
 
-        # -----------------------------
-        # FARMER WALLET
-        # -----------------------------
+    amount = float(
+        order["total_amount"]
+    )
 
-        wallet = (
+
+    # --------------------------------------------------------
+    # UPDATE ORDER FIRST
+    # --------------------------------------------------------
+
+    supabase \
+        .table("orders") \
+        .update({
+
+            "status":
+                "completed",
+
+            "order_status":
+                "completed"
+
+        }) \
+        .eq(
+            "id",
+            order_id
+        ) \
+        .execute()
+
+
+    # ========================================================
+    # FARMER WALLET
+    # ========================================================
+
+    if seller_type == "farmer":
+
+        wallet_response = (
             supabase
             .table("wallets")
             .select("*")
             .eq(
                 "farmer_id",
-                farmer_id
+                seller_id
             )
             .execute()
         )
 
 
-        if wallet.data:
+        if wallet_response.data:
 
-            current_balance = (
-                wallet.data[0]["balance"]
+            current_balance = float(
+                wallet_response.data[0]["balance"]
                 or 0
             )
 
-
             new_balance = (
-                current_balance
-                + order["total_amount"]
+                current_balance +
+                amount
             )
 
 
-            supabase.table(
-                "wallets"
-            ).update({
+            supabase \
+                .table("wallets") \
+                .update({
 
-                "balance":
-                new_balance,
+                    "balance":
+                        new_balance,
 
-                "updated_at":
-                datetime.utcnow().isoformat()
+                    "seller_id":
+                        seller_id,
 
-            }).eq(
-                "farmer_id",
-                farmer_id
-            ).execute()
+                    "seller_type":
+                        "farmer",
 
+                    "updated_at":
+                        datetime.utcnow().isoformat()
+
+                }) \
+                .eq(
+                    "farmer_id",
+                    seller_id
+                ) \
+                .execute()
 
         else:
 
-            supabase.table(
-                "wallets"
-            ).insert({
+            supabase \
+                .table("wallets") \
+                .insert({
 
-                "farmer_id":
-                farmer_id,
+                    "farmer_id":
+                        seller_id,
 
-                "balance":
-                order["total_amount"],
+                    "seller_id":
+                        seller_id,
 
-                "currency":
-                "UGX",
+                    "seller_type":
+                        "farmer",
 
-                "created_at":
-                datetime.utcnow().isoformat()
+                    "balance":
+                        amount,
 
-            }).execute()
+                    "currency":
+                        "UGX",
+
+                    "created_at":
+                        datetime.utcnow().isoformat()
+
+                }) \
+                .execute()
 
 
-        # -----------------------------
-        # FARMER TRANSACTION
-        # -----------------------------
+    # ========================================================
+    # SUPPLIER WALLET
+    # ========================================================
 
-        supabase.table(
-            "transactions"
-        ).insert({
+    else:
 
-            "farmer_id":
-            farmer_id,
+        wallet_response = (
+            supabase
+            .table("wallets")
+            .select("*")
+            .eq(
+                "seller_id",
+                seller_id
+            )
+            .eq(
+                "seller_type",
+                "supplier"
+            )
+            .execute()
+        )
 
-            "amount":
-            order["total_amount"],
 
-            "type":
+        if wallet_response.data:
+
+            current_balance = float(
+                wallet_response.data[0]["balance"]
+                or 0
+            )
+
+            new_balance = (
+                current_balance +
+                amount
+            )
+
+
+            supabase \
+                .table("wallets") \
+                .update({
+
+                    "balance":
+                        new_balance,
+
+                    "updated_at":
+                        datetime.utcnow().isoformat()
+
+                }) \
+                .eq(
+                    "seller_id",
+                    seller_id
+                ) \
+                .eq(
+                    "seller_type",
+                    "supplier"
+                ) \
+                .execute()
+
+        else:
+
+            supabase \
+                .table("wallets") \
+                .insert({
+
+                    "farmer_id":
+                        None,
+
+                    "seller_id":
+                        seller_id,
+
+                    "seller_type":
+                        "supplier",
+
+                    "balance":
+                        amount,
+
+                    "currency":
+                        "UGX",
+
+                    "created_at":
+                        datetime.utcnow().isoformat()
+
+                }) \
+                .execute()
+
+
+    # ========================================================
+    # CREATE TRANSACTION
+    # ========================================================
+
+    transaction_data = {
+
+        "farmer_id":
+            seller_id
+            if seller_type == "farmer"
+            else None,
+
+        "seller_id":
+            seller_id,
+
+        "seller_type":
+            seller_type,
+
+        "amount":
+            amount,
+
+        "type":
             "credit",
 
-            "reference_id":
+        "status":
+            "completed",
+
+        "reference_id":
             order_id,
 
-            "description":
+        "description":
             (
                 f"{order.get('crop') or 'Marketplace'} "
+                f"{order.get('product_type') or 'produce'} "
                 "sale"
             ),
 
-            "created_at":
+        "created_at":
             datetime.utcnow().isoformat()
-
-        }).execute()
-
-
-        return {
-
-            "message":
-            "Order completed and farmer wallet credited.",
-
-            "order_id":
-            order_id,
-
-            "seller_type":
-            "farmer",
-
-            "amount":
-            order["total_amount"]
-        }
+    }
 
 
-    # =================================
-    # SUPPLIER SALE
-    # =================================
-
-    if order.get("seller_type") == "supplier":
-
-        return {
-
-            "message":
-            "Supplier order completed successfully.",
-
-            "order_id":
-            order_id,
-
-            "seller_id":
-            order.get("seller_id"),
-
-            "seller_type":
-            "supplier",
-
-            "amount":
-            order["total_amount"]
-        }
+    supabase \
+        .table("transactions") \
+        .insert(transaction_data) \
+        .execute()
 
 
-    # =================================
-    # UNKNOWN SELLER TYPE
-    # =================================
+    # ========================================================
+    # RESPONSE
+    # ========================================================
+
+    if seller_type == "farmer":
+
+        message = (
+            "Order completed and farmer wallet credited."
+        )
+
+    else:
+
+        message = (
+            "Order completed and supplier wallet credited."
+        )
+
 
     return {
 
         "message":
-        "Order completed successfully.",
+            message,
 
         "order_id":
-        order_id,
+            order_id,
+
+        "seller_id":
+            seller_id,
+
+        "seller_type":
+            seller_type,
+
+        "product_type":
+            order.get("product_type")
+            or "produce",
 
         "amount":
-        order["total_amount"]
+            amount
     }
