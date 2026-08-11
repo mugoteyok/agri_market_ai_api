@@ -118,7 +118,6 @@ async def create_order(
         )
 
     seller_type = seller_type.lower()
-
     product_type = product_type.lower()
 
     # ========================================================
@@ -590,13 +589,6 @@ async def pay_order(
 
     # ========================================================
     # BUYER PHONE NUMBER
-    #
-    # PaymentRequest should contain:
-    #
-    # mobile_number
-    #
-    # If your current PaymentRequest uses a different field,
-    # change this line to that field.
     # ========================================================
 
     phone_number = (
@@ -619,15 +611,6 @@ async def pay_order(
 
     # ========================================================
     # NORMALIZE PHONE NUMBER
-    #
-    # MTN expects the MSISDN.
-    #
-    # Examples:
-    #
-    # 0772123456
-    # 256772123456
-    #
-    # We normalize local Uganda format.
     # ========================================================
 
     phone_number = (
@@ -680,8 +663,6 @@ async def pay_order(
 
     # ========================================================
     # CREATE MTN REFERENCE
-    #
-    # MTN requires a unique UUID reference.
     # ========================================================
 
     payment_reference = str(
@@ -730,13 +711,6 @@ async def pay_order(
 
     # ========================================================
     # MTN REQUEST ACCEPTED
-    #
-    # Expected:
-    #
-    # 202 Accepted
-    #
-    # This means payment processing has started.
-    # It does NOT mean payment succeeded.
     # ========================================================
 
     if mtn_response.status_code != 202:
@@ -756,13 +730,6 @@ async def pay_order(
 
     # ========================================================
     # SAVE PAYMENT REFERENCE
-    #
-    # IMPORTANT:
-    #
-    # Your orders table needs:
-    #
-    # payment_reference
-    #
     # ========================================================
 
     payment_update = {
@@ -838,8 +805,6 @@ async def pay_order(
 # CHECK PAYMENT STATUS
 #
 # GET /orders/{order_id}/payment-status
-#
-# This checks MTN Collections.
 #
 # Only SUCCESSFUL becomes:
 #
@@ -945,13 +910,6 @@ async def check_payment_status(
 
     # ========================================================
     # READ MTN STATUS
-    #
-    # Common MTN statuses include:
-    #
-    # SUCCESSFUL
-    # FAILED
-    # PENDING
-    # REJECTED
     # ========================================================
 
     mtn_result = (
@@ -1411,7 +1369,7 @@ async def update_order_status(
 #
 # 1. Order exists
 # 2. Buyer has paid
-# 3. Order is accepted
+# 3. Order is accepted OR ready
 # 4. Seller exists
 #
 # IMPORTANT:
@@ -1475,15 +1433,18 @@ async def complete_order(
         )
 
     # ========================================================
-    # ONLY ACCEPTED ORDERS
+    # ONLY ACCEPTED OR READY ORDERS
     # ========================================================
 
-    if order.get("order_status") != "accepted":
+    if order.get("order_status") not in [
+        "accepted",
+        "ready",
+    ]:
 
         raise HTTPException(
             status_code=400,
             detail=(
-                "Only accepted orders "
+                "Only accepted or ready orders "
                 "can be completed."
             )
         )
