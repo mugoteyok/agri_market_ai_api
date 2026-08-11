@@ -65,7 +65,6 @@ async def create_order(
 
     product = product_response.data[0]
 
-
     # --------------------------------------------------------
     # CHECK PRODUCT STATUS
     # --------------------------------------------------------
@@ -76,7 +75,6 @@ async def create_order(
             status_code=400,
             detail="Product is no longer available"
         )
-
 
     # --------------------------------------------------------
     # CHECK QUANTITY
@@ -89,7 +87,6 @@ async def create_order(
             detail="Quantity must be greater than zero"
         )
 
-
     if order.quantity > float(
         product.get("quantity") or 0
     ):
@@ -98,7 +95,6 @@ async def create_order(
             status_code=400,
             detail="Insufficient product quantity"
         )
-
 
     # --------------------------------------------------------
     # DETERMINE SELLER
@@ -119,7 +115,6 @@ async def create_order(
         or "produce"
     )
 
-
     if not seller_id:
 
         raise HTTPException(
@@ -127,6 +122,11 @@ async def create_order(
             detail="Product does not have a seller"
         )
 
+    # --------------------------------------------------------
+    # NORMALIZE SELLER TYPE
+    # --------------------------------------------------------
+
+    seller_type = seller_type.lower()
 
     # --------------------------------------------------------
     # VALIDATE SELLER TYPE
@@ -142,6 +142,11 @@ async def create_order(
             detail="Invalid seller type"
         )
 
+    # --------------------------------------------------------
+    # NORMALIZE PRODUCT TYPE
+    # --------------------------------------------------------
+
+    product_type = product_type.lower()
 
     # --------------------------------------------------------
     # VALIDATE PRODUCT TYPE
@@ -157,7 +162,6 @@ async def create_order(
             detail="Invalid product type"
         )
 
-
     # --------------------------------------------------------
     # PRICE
     # --------------------------------------------------------
@@ -170,7 +174,6 @@ async def create_order(
         product.get("price_per_unit") or 0
     )
 
-
     if price_per_unit <= 0:
 
         raise HTTPException(
@@ -178,12 +181,10 @@ async def create_order(
             detail="Invalid product price"
         )
 
-
     total_amount = (
         quantity *
         price_per_unit
     )
-
 
     # --------------------------------------------------------
     # FARMER COMPATIBILITY
@@ -200,7 +201,6 @@ async def create_order(
     if seller_type == "farmer":
 
         farmer_id = seller_id
-
 
     # --------------------------------------------------------
     # CREATE ORDER
@@ -257,7 +257,6 @@ async def create_order(
             datetime.utcnow().isoformat()
     }
 
-
     order_response = (
         supabase
         .table("orders")
@@ -265,14 +264,12 @@ async def create_order(
         .execute()
     )
 
-
     if not order_response.data:
 
         raise HTTPException(
             status_code=500,
             detail="Failed to create order"
         )
-
 
     # --------------------------------------------------------
     # REDUCE PRODUCT STOCK
@@ -283,20 +280,17 @@ async def create_order(
         - quantity
     )
 
-
     product_update = {
 
         "quantity":
             remaining_quantity
     }
 
-
     if remaining_quantity <= 0:
 
         product_update["quantity"] = 0
 
         product_update["status"] = "sold"
-
 
     supabase \
         .table("products") \
@@ -306,7 +300,6 @@ async def create_order(
             order.product_id
         ) \
         .execute()
-
 
     # --------------------------------------------------------
     # RESPONSE
@@ -356,7 +349,6 @@ async def farmer_orders(
         .execute()
     )
 
-
     return response.data
 
 
@@ -398,7 +390,6 @@ async def supplier_orders(
         .execute()
     )
 
-
     return response.data
 
 
@@ -432,7 +423,6 @@ async def seller_orders(
         )
         .execute()
     )
-
 
     return response.data
 
@@ -468,7 +458,6 @@ async def buyer_orders(
         .execute()
     )
 
-
     return response.data
 
 
@@ -494,14 +483,12 @@ async def get_order_details(
         .execute()
     )
 
-
     if not response.data:
 
         raise HTTPException(
             status_code=404,
             detail="Order not found"
         )
-
 
     return response.data[0]
 
@@ -529,7 +516,6 @@ async def pay_order(
         .execute()
     )
 
-
     if not order_response.data:
 
         raise HTTPException(
@@ -537,9 +523,7 @@ async def pay_order(
             detail="Order not found"
         )
 
-
     order = order_response.data[0]
-
 
     # --------------------------------------------------------
     # PREVENT DOUBLE PAYMENT
@@ -551,7 +535,6 @@ async def pay_order(
             status_code=400,
             detail="Order already paid"
         )
-
 
     # --------------------------------------------------------
     # ONLY PLACED / ACCEPTED ORDERS CAN BE PAID
@@ -566,7 +549,6 @@ async def pay_order(
             status_code=400,
             detail="Order cannot be paid in its current state"
         )
-
 
     # --------------------------------------------------------
     # UPDATE PAYMENT
@@ -591,14 +573,12 @@ async def pay_order(
         .execute()
     )
 
-
     if not payment_response.data:
 
         raise HTTPException(
             status_code=500,
             detail="Failed to update payment"
         )
-
 
     return {
 
@@ -620,6 +600,8 @@ async def pay_order(
 # CANCEL ORDER
 #
 # Only orders that have not been accepted can be cancelled.
+#
+# PUT /orders/{order_id}/cancel
 # ============================================================
 
 @router.put("/orders/{order_id}/cancel")
@@ -638,7 +620,6 @@ async def cancel_order(
         .execute()
     )
 
-
     if not order_response.data:
 
         raise HTTPException(
@@ -646,9 +627,7 @@ async def cancel_order(
             detail="Order not found"
         )
 
-
     order = order_response.data[0]
-
 
     if order.get("order_status") != "placed":
 
@@ -656,7 +635,6 @@ async def cancel_order(
             status_code=400,
             detail="Order cannot be cancelled"
         )
-
 
     cancel_response = (
         supabase
@@ -677,14 +655,12 @@ async def cancel_order(
         .execute()
     )
 
-
     if not cancel_response.data:
 
         raise HTTPException(
             status_code=500,
             detail="Failed to cancel order"
         )
-
 
     return {
 
@@ -707,7 +683,7 @@ async def cancel_order(
 # Farmer seller
 # Supplier seller
 #
-# GET/PUT /orders/{order_id}/accept
+# PUT /orders/{order_id}/accept
 # ============================================================
 
 @router.put("/orders/{order_id}/accept")
@@ -726,7 +702,6 @@ async def accept_order(
         .execute()
     )
 
-
     if not order_response.data:
 
         raise HTTPException(
@@ -734,9 +709,7 @@ async def accept_order(
             detail="Order not found"
         )
 
-
     order = order_response.data[0]
-
 
     # --------------------------------------------------------
     # ONLY PLACED ORDERS CAN BE ACCEPTED
@@ -748,7 +721,6 @@ async def accept_order(
             status_code=400,
             detail="Only placed orders can be accepted"
         )
-
 
     # --------------------------------------------------------
     # VALIDATE SELLER
@@ -764,7 +736,6 @@ async def accept_order(
         or "farmer"
     )
 
-
     if not seller_id:
 
         raise HTTPException(
@@ -772,6 +743,7 @@ async def accept_order(
             detail="Order seller is missing"
         )
 
+    seller_type = seller_type.lower()
 
     if seller_type not in [
         "farmer",
@@ -782,7 +754,6 @@ async def accept_order(
             status_code=400,
             detail="Invalid seller type"
         )
-
 
     # --------------------------------------------------------
     # ACCEPT ORDER
@@ -810,14 +781,12 @@ async def accept_order(
         .execute()
     )
 
-
     if not accept_response.data:
 
         raise HTTPException(
             status_code=500,
             detail="Failed to accept order"
         )
-
 
     return {
 
@@ -844,6 +813,7 @@ async def accept_order(
 # Generic seller status update.
 #
 # IMPORTANT:
+#
 # completed is NOT allowed here.
 #
 # Completion must go through:
@@ -855,6 +825,7 @@ async def accept_order(
 # wallet credit
 # transaction
 # payment verification
+# duplicate protection
 # ============================================================
 
 @router.put("/orders/{order_id}/status")
@@ -878,9 +849,7 @@ async def update_order_status(
         "cancelled"
     ]
 
-
     status = status.lower()
-
 
     if status not in allowed_statuses:
 
@@ -891,7 +860,6 @@ async def update_order_status(
                 f"Allowed: {allowed_statuses}"
             )
         )
-
 
     # --------------------------------------------------------
     # COMPLETED MUST USE COMPLETE ENDPOINT
@@ -906,7 +874,6 @@ async def update_order_status(
                 "to complete an order."
             )
         )
-
 
     # --------------------------------------------------------
     # GET ORDER
@@ -923,14 +890,12 @@ async def update_order_status(
         .execute()
     )
 
-
     if not order_response.data:
 
         raise HTTPException(
             status_code=404,
             detail="Order not found"
         )
-
 
     # --------------------------------------------------------
     # UPDATE STATUS
@@ -955,14 +920,12 @@ async def update_order_status(
         .execute()
     )
 
-
     if not update_response.data:
 
         raise HTTPException(
             status_code=500,
             detail="Failed to update order status"
         )
-
 
     return {
 
@@ -975,12 +938,15 @@ async def update_order_status(
         "order_status":
             status
     }
-
-
-# ============================================================
+   # ============================================================
 # COMPLETE ORDER
 #
 # This is where the seller gets paid.
+#
+# Works for:
+#
+# Farmer selling produce
+# Supplier selling farm supplies
 #
 # Requirements:
 #
@@ -992,16 +958,22 @@ async def update_order_status(
 # Then:
 #
 # Farmer:
-#   farmer wallet credited
+#     farmer wallet credited
 #
 # Supplier:
-#   supplier wallet credited
+#     supplier wallet credited
 #
 # Both:
-#   transaction created
+#     transaction created
 #
 # Finally:
-#   order marked completed
+#     order marked completed
+#
+# IMPORTANT:
+#
+# reference_id = order_id
+#
+# is used to prevent duplicate wallet credits.
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
@@ -1009,9 +981,9 @@ async def complete_order(
     order_id: str
 ):
 
-    # --------------------------------------------------------
+    # ========================================================
     # GET ORDER
-    # --------------------------------------------------------
+    # ========================================================
 
     order_response = (
         supabase
@@ -1024,7 +996,6 @@ async def complete_order(
         .execute()
     )
 
-
     if not order_response.data:
 
         raise HTTPException(
@@ -1032,13 +1003,11 @@ async def complete_order(
             detail="Order not found"
         )
 
-
     order = order_response.data[0]
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # PAYMENT CHECK
-    # --------------------------------------------------------
+    # ========================================================
 
     if order.get("payment_status") != "paid":
 
@@ -1047,10 +1016,9 @@ async def complete_order(
             detail="Buyer has not completed payment."
         )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # PREVENT DUPLICATE COMPLETION
-    # --------------------------------------------------------
+    # ========================================================
 
     if order.get("order_status") == "completed":
 
@@ -1059,10 +1027,9 @@ async def complete_order(
             detail="Order already completed."
         )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # ONLY ACCEPTED ORDERS CAN BE COMPLETED
-    # --------------------------------------------------------
+    # ========================================================
 
     if order.get("order_status") != "accepted":
 
@@ -1071,22 +1038,19 @@ async def complete_order(
             detail="Only accepted orders can be completed."
         )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # DETERMINE SELLER
-    # --------------------------------------------------------
+    # ========================================================
 
     seller_id = (
         order.get("seller_id")
         or order.get("farmer_id")
     )
 
-
     seller_type = (
         order.get("seller_type")
         or "farmer"
     )
-
 
     if not seller_id:
 
@@ -1095,6 +1059,7 @@ async def complete_order(
             detail="Seller ID is missing."
         )
 
+    seller_type = seller_type.lower()
 
     if seller_type not in [
         "farmer",
@@ -1106,15 +1071,13 @@ async def complete_order(
             detail="Invalid seller type."
         )
 
-
-    # --------------------------------------------------------
+    # ========================================================
     # AMOUNT
-    # --------------------------------------------------------
+    # ========================================================
 
     amount = float(
         order.get("total_amount") or 0
     )
-
 
     if amount <= 0:
 
@@ -1123,6 +1086,100 @@ async def complete_order(
             detail="Invalid order amount."
         )
 
+    # ========================================================
+    # CHECK FOR EXISTING TRANSACTION
+    #
+    # This prevents the same order from crediting the wallet
+    # more than once.
+    # ========================================================
+
+    existing_transaction = (
+        supabase
+        .table("transactions")
+        .select("*")
+        .eq(
+            "reference_id",
+            order_id
+        )
+        .eq(
+            "type",
+            "credit"
+        )
+        .execute()
+    )
+
+    if existing_transaction.data:
+
+        # ----------------------------------------------------
+        # A transaction already exists.
+        #
+        # The seller was already credited.
+        #
+        # We can safely make sure the order is completed.
+        # ----------------------------------------------------
+
+        existing_order_update = (
+            supabase
+            .table("orders")
+            .update({
+
+                "status":
+                    "completed",
+
+                "order_status":
+                    "completed"
+
+            })
+            .eq(
+                "id",
+                order_id
+            )
+            .execute()
+        )
+
+        if not existing_order_update.data:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Seller transaction already exists, "
+                    "but order could not be marked completed."
+                )
+            )
+
+        return {
+
+            "message":
+                (
+                    "Order was already processed. "
+                    "Seller wallet was not credited again."
+                ),
+
+            "order_id":
+                order_id,
+
+            "seller_id":
+                seller_id,
+
+            "seller_type":
+                seller_type,
+
+            "product_type":
+                order.get("product_type")
+                or "produce",
+
+            "amount":
+                amount,
+
+            "order_status":
+                "completed",
+
+            "wallet_credited":
+                False,
+
+            "already_processed":
+                True
+        }
 
     # ========================================================
     # FIND SELLER WALLET
@@ -1132,7 +1189,11 @@ async def complete_order(
     # seller_id
     # seller_type
     #
-    # farmer_id remains populated for farmers.
+    # Farmer:
+    #     seller_type = farmer
+    #
+    # Supplier:
+    #     seller_type = supplier
     # ========================================================
 
     wallet_response = (
@@ -1150,7 +1211,6 @@ async def complete_order(
         .execute()
     )
 
-
     # ========================================================
     # UPDATE EXISTING WALLET
     # ========================================================
@@ -1159,17 +1219,14 @@ async def complete_order(
 
         wallet = wallet_response.data[0]
 
-
         current_balance = float(
             wallet.get("balance") or 0
         )
-
 
         new_balance = (
             current_balance +
             amount
         )
-
 
         wallet_update = (
             supabase
@@ -1190,14 +1247,12 @@ async def complete_order(
             .execute()
         )
 
-
         if not wallet_update.data:
 
             raise HTTPException(
                 status_code=500,
                 detail="Failed to update seller wallet."
             )
-
 
     # ========================================================
     # CREATE NEW WALLET
@@ -1228,14 +1283,14 @@ async def complete_order(
                 datetime.utcnow().isoformat()
         }
 
-
         wallet_insert = (
             supabase
             .table("wallets")
-            .insert(wallet_data)
+            .insert(
+                wallet_data
+            )
             .execute()
         )
-
 
         if not wallet_insert.data:
 
@@ -1244,10 +1299,23 @@ async def complete_order(
                 detail="Failed to create seller wallet."
             )
 
+    # ========================================================
+    # CREATE SELLER TRANSACTION
+    # ========================================================
 
-    # ========================================================
-    # CREATE TRANSACTION
-    # ========================================================
+    if seller_type == "supplier":
+
+        description = (
+            f"{order.get('crop') or 'Farm supply'} "
+            "sale"
+        )
+
+    else:
+
+        description = (
+            f"{order.get('crop') or 'Produce'} "
+            "sale"
+        )
 
     transaction_data = {
 
@@ -1275,32 +1343,40 @@ async def complete_order(
             order_id,
 
         "description":
-            (
-                f"{order.get('crop') or 'Marketplace'} "
-                f"{order.get('product_type') or 'produce'} "
-                "sale"
-            ),
+            description,
 
         "created_at":
             datetime.utcnow().isoformat()
     }
 
-
     transaction_response = (
         supabase
         .table("transactions")
-        .insert(transaction_data)
+        .insert(
+            transaction_data
+        )
         .execute()
     )
 
-
     if not transaction_response.data:
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # The wallet was already credited at this point.
+        #
+        # We report the failure instead of pretending that
+        # everything completed successfully.
+        # ----------------------------------------------------
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to create seller transaction."
+            detail=(
+                "Seller wallet was credited, "
+                "but transaction creation failed. "
+                "Manual reconciliation may be required."
+            )
         )
-
 
     # ========================================================
     # MARK ORDER COMPLETED
@@ -1325,17 +1401,16 @@ async def complete_order(
         .execute()
     )
 
-
     if not order_update.data:
 
         raise HTTPException(
             status_code=500,
             detail=(
-                "Seller was credited but "
-                "order completion update failed."
+                "Seller was credited and transaction "
+                "was created, but order completion "
+                "update failed."
             )
         )
-
 
     # ========================================================
     # RESPONSE
@@ -1344,15 +1419,16 @@ async def complete_order(
     if seller_type == "farmer":
 
         message = (
-            "Order completed and farmer wallet credited."
+            "Order completed and "
+            "farmer wallet credited."
         )
 
     else:
 
         message = (
-            "Order completed and supplier wallet credited."
+            "Order completed and "
+            "supplier wallet credited."
         )
-
 
     return {
 
@@ -1379,5 +1455,9 @@ async def complete_order(
             "completed",
 
         "wallet_credited":
-            True
-    }
+            True,
+
+        "already_processed":
+            False
+    } 
+    
