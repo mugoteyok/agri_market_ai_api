@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, HTTPException
 
 from database import supabase
@@ -547,6 +548,9 @@ async def get_produce_products():
 # GET /products/supplies
 #
 # Public farm-supplies marketplace.
+#
+# Includes active paid promotions.
+# Promoted products appear first.
 # ============================================================
 
 @router.get("/products/supplies")
@@ -554,7 +558,11 @@ async def get_farm_supplies():
 
     try:
 
-        response = (
+        # ====================================================
+        # GET AVAILABLE FARM SUPPLIES
+        # ====================================================
+
+        products_response = (
 
             supabase
 
@@ -581,7 +589,173 @@ async def get_farm_supplies():
 
         )
 
-        return response.data
+        products = (
+            products_response.data
+            or []
+        )
+
+
+        # ====================================================
+        # GET ACTIVE PAID PROMOTIONS
+        # ====================================================
+
+        now = (
+            datetime.utcnow().isoformat()
+            + "Z"
+        )
+
+
+        promotions_response = (
+
+            supabase
+
+            .table("product_promotions")
+
+            .select("*")
+
+            .eq(
+                "status",
+                "active"
+            )
+
+            .eq(
+                "payment_status",
+                "paid"
+            )
+
+            .lte(
+                "starts_at",
+                now
+            )
+
+            .gt(
+                "expires_at",
+                now
+            )
+
+            .execute()
+
+        )
+
+        promotions = (
+            promotions_response.data
+            or []
+        )
+
+
+        # ====================================================
+        # CREATE PROMOTION LOOKUP
+        # ====================================================
+
+        promotion_map = {
+
+            promotion["product_id"]:
+                promotion
+
+            for promotion in promotions
+
+        }
+
+
+        # ====================================================
+        # ATTACH PROMOTION INFORMATION
+        # ====================================================
+
+        promoted_products = []
+
+        normal_products = []
+
+
+        for product in products:
+
+            product_id = product.get("id")
+
+            promotion = (
+                promotion_map.get(
+                    product_id
+                )
+            )
+
+
+            # =================================================
+            # DEFAULT MARKETPLACE PROMOTION DATA
+            # =================================================
+
+            product["is_promoted"] = False
+
+            product["original_price"] = (
+                product.get(
+                    "price_per_unit"
+                )
+            )
+
+            product["promoted_price"] = None
+
+            product["discount_percentage"] = None
+
+            product["promotion_expires_at"] = None
+
+            product["promotion_id"] = None
+
+
+            # =================================================
+            # ACTIVE PROMOTION
+            # =================================================
+
+            if promotion:
+
+                product["is_promoted"] = True
+
+                product["original_price"] = (
+                    promotion.get(
+                        "original_price"
+                    )
+                )
+
+                product["promoted_price"] = (
+                    promotion.get(
+                        "promoted_price"
+                    )
+                )
+
+                product["discount_percentage"] = (
+                    promotion.get(
+                        "discount_percentage"
+                    )
+                )
+
+                product["promotion_expires_at"] = (
+                    promotion.get(
+                        "expires_at"
+                    )
+                )
+
+                product["promotion_id"] = (
+                    promotion.get(
+                        "id"
+                    )
+                )
+
+
+                promoted_products.append(
+                    product
+                )
+
+            else:
+
+                normal_products.append(
+                    product
+                )
+
+
+        # ====================================================
+        # PROMOTED PRODUCTS FIRST
+        # ====================================================
+
+        return (
+            promoted_products
+            + normal_products
+        )
 
 
     except Exception as e:
@@ -835,3 +1009,4 @@ async def delete_product(
             detail=str(e)
 
         )
+
