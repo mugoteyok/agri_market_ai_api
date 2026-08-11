@@ -5,7 +5,14 @@ from database import supabase
 from schemas.order import OrderCreate
 from schemas.payment import PaymentRequest
 
+from services.mtn_service import (
+    request_payment,
+    get_payment_status
+)
+
 from datetime import datetime
+
+import uuid
 
 
 router = APIRouter()
@@ -20,20 +27,6 @@ router = APIRouter()
 #
 # Farmer selling produce
 # Supplier selling farm supplies
-#
-# Examples:
-#
-# Produce:
-#   maize
-#   coffee
-#   beans
-#   cassava
-#
-# Farm supplies:
-#   seeds
-#   pesticides
-#   fertilizer
-#   equipment
 # ============================================================
 
 @router.post("/orders")
@@ -41,9 +34,9 @@ async def create_order(
     order: OrderCreate
 ):
 
-    # --------------------------------------------------------
+    # ========================================================
     # GET PRODUCT
-    # --------------------------------------------------------
+    # ========================================================
 
     product_response = (
         supabase
@@ -65,9 +58,9 @@ async def create_order(
 
     product = product_response.data[0]
 
-    # --------------------------------------------------------
+    # ========================================================
     # CHECK PRODUCT STATUS
-    # --------------------------------------------------------
+    # ========================================================
 
     if product.get("status") != "available":
 
@@ -76,9 +69,9 @@ async def create_order(
             detail="Product is no longer available"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CHECK QUANTITY
-    # --------------------------------------------------------
+    # ========================================================
 
     if order.quantity <= 0:
 
@@ -87,18 +80,20 @@ async def create_order(
             detail="Quantity must be greater than zero"
         )
 
-    if order.quantity > float(
+    available_quantity = float(
         product.get("quantity") or 0
-    ):
+    )
+
+    if order.quantity > available_quantity:
 
         raise HTTPException(
             status_code=400,
             detail="Insufficient product quantity"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # DETERMINE SELLER
-    # --------------------------------------------------------
+    # ========================================================
 
     seller_id = (
         product.get("seller_id")
@@ -122,15 +117,13 @@ async def create_order(
             detail="Product does not have a seller"
         )
 
-    # --------------------------------------------------------
-    # NORMALIZE SELLER TYPE
-    # --------------------------------------------------------
-
     seller_type = seller_type.lower()
 
-    # --------------------------------------------------------
+    product_type = product_type.lower()
+
+    # ========================================================
     # VALIDATE SELLER TYPE
-    # --------------------------------------------------------
+    # ========================================================
 
     if seller_type not in [
         "farmer",
@@ -142,15 +135,9 @@ async def create_order(
             detail="Invalid seller type"
         )
 
-    # --------------------------------------------------------
-    # NORMALIZE PRODUCT TYPE
-    # --------------------------------------------------------
-
-    product_type = product_type.lower()
-
-    # --------------------------------------------------------
+    # ========================================================
     # VALIDATE PRODUCT TYPE
-    # --------------------------------------------------------
+    # ========================================================
 
     if product_type not in [
         "produce",
@@ -162,9 +149,9 @@ async def create_order(
             detail="Invalid product type"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PRICE
-    # --------------------------------------------------------
+    # ========================================================
 
     quantity = float(
         order.quantity
@@ -186,15 +173,9 @@ async def create_order(
         price_per_unit
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # FARMER COMPATIBILITY
-    #
-    # Existing farmer orders use farmer_id.
-    #
-    # Supplier orders:
-    #   farmer_id = NULL
-    #   seller_id = supplier ID
-    # --------------------------------------------------------
+    # ========================================================
 
     farmer_id = None
 
@@ -202,9 +183,9 @@ async def create_order(
 
         farmer_id = seller_id
 
-    # --------------------------------------------------------
+    # ========================================================
     # CREATE ORDER
-    # --------------------------------------------------------
+    # ========================================================
 
     new_order = {
 
@@ -271,13 +252,17 @@ async def create_order(
             detail="Failed to create order"
         )
 
-    # --------------------------------------------------------
+    created_order = (
+        order_response.data[0]
+    )
+
+    # ========================================================
     # REDUCE PRODUCT STOCK
-    # --------------------------------------------------------
+    # ========================================================
 
     remaining_quantity = (
-        float(product.get("quantity") or 0)
-        - quantity
+        available_quantity -
+        quantity
     )
 
     product_update = {
@@ -292,18 +277,28 @@ async def create_order(
 
         product_update["status"] = "sold"
 
-    supabase \
-        .table("products") \
-        .update(product_update) \
+    stock_response = (
+        supabase
+        .table("products")
+        .update(product_update)
         .eq(
             "id",
             order.product_id
-        ) \
+        )
         .execute()
+    )
 
-    # --------------------------------------------------------
+    if not stock_response.data:
+
+        print(
+            "WARNING: Order created but "
+            "product stock update failed.",
+            order.product_id
+        )
+
+    # ========================================================
     # RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
 
     return {
 
@@ -311,16 +306,12 @@ async def create_order(
             "Order created successfully",
 
         "order":
-            order_response.data[0]
+            created_order
     }
 
 
 # ============================================================
 # FARMER ORDERS
-#
-# Farmer receives orders for produce.
-#
-# Kept for backward compatibility.
 #
 # GET /orders/farmer/{farmer_id}
 # ============================================================
@@ -355,14 +346,6 @@ async def farmer_orders(
 # ============================================================
 # SUPPLIER ORDERS
 #
-# Supplier receives orders for:
-#
-# seeds
-# pesticides
-# fertilizer
-# equipment
-# other farm inputs
-#
 # GET /orders/supplier/{supplier_id}
 # ============================================================
 
@@ -396,11 +379,6 @@ async def supplier_orders(
 # ============================================================
 # GENERIC SELLER ORDERS
 #
-# Works for BOTH:
-#
-# farmer
-# supplier
-#
 # GET /orders/seller/{seller_id}
 # ============================================================
 
@@ -429,11 +407,6 @@ async def seller_orders(
 
 # ============================================================
 # BUYER ORDERS
-#
-# Used when:
-#
-# Farmer buys supplies
-# Buyer buys produce
 #
 # GET /orders/buyer/{buyer_id}
 # ============================================================
@@ -497,6 +470,14 @@ async def get_order_details(
 # PAY ORDER
 #
 # POST /orders/{order_id}/payment
+#
+# IMPORTANT:
+#
+# This endpoint initiates MTN COLLECTIONS.
+#
+# It does NOT immediately mark the order paid.
+#
+# MTN RequestToPay is asynchronous.
 # ============================================================
 
 @router.post("/orders/{order_id}/payment")
@@ -504,6 +485,10 @@ async def pay_order(
     order_id: str,
     payment: PaymentRequest
 ):
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
 
     order_response = (
         supabase
@@ -525,9 +510,9 @@ async def pay_order(
 
     order = order_response.data[0]
 
-    # --------------------------------------------------------
+    # ========================================================
     # PREVENT DOUBLE PAYMENT
-    # --------------------------------------------------------
+    # ========================================================
 
     if order.get("payment_status") == "paid":
 
@@ -536,9 +521,44 @@ async def pay_order(
             detail="Order already paid"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
+    # CHECK EXISTING PAYMENT
+    #
+    # If a payment is already pending, don't create another
+    # MTN RequestToPay transaction.
+    # ========================================================
+
+    if order.get("payment_status") == "pending":
+
+        existing_reference = (
+            order.get("payment_reference")
+        )
+
+        if existing_reference:
+
+            return {
+
+                "message":
+                    "Payment request already exists.",
+
+                "order_id":
+                    order_id,
+
+                "payment_status":
+                    "pending",
+
+                "payment_reference":
+                    existing_reference,
+
+                "payment_method":
+                    order.get(
+                        "payment_method"
+                    )
+            }
+
+    # ========================================================
     # ONLY PLACED / ACCEPTED ORDERS CAN BE PAID
-    # --------------------------------------------------------
+    # ========================================================
 
     if order.get("order_status") not in [
         "placed",
@@ -547,25 +567,220 @@ async def pay_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Order cannot be paid in its current state"
+            detail=(
+                "Order cannot be paid in "
+                "its current state"
+            )
         )
 
-    # --------------------------------------------------------
-    # UPDATE PAYMENT
-    # --------------------------------------------------------
+    # ========================================================
+    # AMOUNT
+    # ========================================================
 
-    payment_response = (
+    amount = float(
+        order.get("total_amount") or 0
+    )
+
+    if amount <= 0:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid order amount"
+        )
+
+    # ========================================================
+    # BUYER PHONE NUMBER
+    #
+    # PaymentRequest should contain:
+    #
+    # mobile_number
+    #
+    # If your current PaymentRequest uses a different field,
+    # change this line to that field.
+    # ========================================================
+
+    phone_number = (
+        getattr(
+            payment,
+            "mobile_number",
+            None
+        )
+    )
+
+    if not phone_number:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Buyer Mobile Money phone "
+                "number is required."
+            )
+        )
+
+    # ========================================================
+    # NORMALIZE PHONE NUMBER
+    #
+    # MTN expects the MSISDN.
+    #
+    # Examples:
+    #
+    # 0772123456
+    # 256772123456
+    #
+    # We normalize local Uganda format.
+    # ========================================================
+
+    phone_number = (
+        phone_number
+        .strip()
+        .replace(
+            " ",
+            ""
+        )
+        .replace(
+            "+",
+            ""
+        )
+    )
+
+    if phone_number.startswith(
+        "0"
+    ):
+
+        phone_number = (
+            "256"
+            + phone_number[1:]
+        )
+
+    # ========================================================
+    # BASIC PHONE VALIDATION
+    # ========================================================
+
+    if not phone_number.isdigit():
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid Mobile Money "
+                "phone number."
+            )
+        )
+
+    if not phone_number.startswith(
+        "256"
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Use a valid Uganda Mobile "
+                "Money number."
+            )
+        )
+
+    # ========================================================
+    # CREATE MTN REFERENCE
+    #
+    # MTN requires a unique UUID reference.
+    # ========================================================
+
+    payment_reference = str(
+        uuid.uuid4()
+    )
+
+    # ========================================================
+    # REQUEST MTN PAYMENT
+    # ========================================================
+
+    try:
+
+        mtn_response = request_payment(
+
+            amount=amount,
+
+            phone_number=phone_number,
+
+            external_id=
+                payment_reference,
+
+            payer_message=(
+                f"Agri AI Assist "
+                f"order {order_id}"
+            ),
+
+            payee_note=(
+                "Marketplace order payment"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "MTN PAYMENT ERROR:",
+            str(e)
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unable to initiate "
+                "Mobile Money payment."
+            )
+        )
+
+    # ========================================================
+    # MTN REQUEST ACCEPTED
+    #
+    # Expected:
+    #
+    # 202 Accepted
+    #
+    # This means payment processing has started.
+    # It does NOT mean payment succeeded.
+    # ========================================================
+
+    if mtn_response.status_code != 202:
+
+        print(
+            "MTN PAYMENT FAILED:",
+            mtn_response.text
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "MTN did not accept "
+                "the payment request."
+            )
+        )
+
+    # ========================================================
+    # SAVE PAYMENT REFERENCE
+    #
+    # IMPORTANT:
+    #
+    # Your orders table needs:
+    #
+    # payment_reference
+    #
+    # ========================================================
+
+    payment_update = {
+
+        "payment_status":
+            "pending",
+
+        "payment_method":
+            "Mobile Money",
+
+        "payment_reference":
+            payment_reference
+    }
+
+    payment_update_response = (
         supabase
         .table("orders")
-        .update({
-
-            "payment_status":
-                "paid",
-
-            "payment_method":
-                payment.payment_method
-
-        })
+        .update(payment_update)
         .eq(
             "id",
             order_id
@@ -573,26 +788,311 @@ async def pay_order(
         .execute()
     )
 
-    if not payment_response.data:
+    if not payment_update_response.data:
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to update payment"
+            detail=(
+                "MTN payment request was "
+                "accepted, but the order "
+                "could not be updated."
+            )
         )
+
+    # ========================================================
+    # RESPONSE
+    # ========================================================
 
     return {
 
         "message":
-            "Payment successful",
+            (
+                "Mobile Money payment "
+                "request sent successfully."
+            ),
+
+        "order_id":
+            order_id,
+
+        "amount":
+            amount,
+
+        "payment_status":
+            "pending",
+
+        "payment_method":
+            "Mobile Money",
+
+        "payment_reference":
+            payment_reference,
+
+        "next_step":
+            (
+                "Buyer must approve the "
+                "Mobile Money payment."
+            )
+    }
+
+
+# ============================================================
+# CHECK PAYMENT STATUS
+#
+# GET /orders/{order_id}/payment-status
+#
+# This checks MTN Collections.
+#
+# Only SUCCESSFUL becomes:
+#
+# payment_status = paid
+#
+# FAILED becomes:
+#
+# payment_status = failed
+# ============================================================
+
+@router.get(
+    "/orders/{order_id}/payment-status"
+)
+async def check_payment_status(
+    order_id: str
+):
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
+
+    order_response = (
+        supabase
+        .table("orders")
+        .select("*")
+        .eq(
+            "id",
+            order_id
+        )
+        .execute()
+    )
+
+    if not order_response.data:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found"
+        )
+
+    order = order_response.data[0]
+
+    # ========================================================
+    # ALREADY PAID
+    # ========================================================
+
+    if order.get("payment_status") == "paid":
+
+        return {
+
+            "order_id":
+                order_id,
+
+            "payment_status":
+                "paid",
+
+            "message":
+                "Payment already confirmed."
+        }
+
+    # ========================================================
+    # GET MTN REFERENCE
+    # ========================================================
+
+    payment_reference = (
+        order.get("payment_reference")
+    )
+
+    if not payment_reference:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No Mobile Money payment "
+                "has been initiated for "
+                "this order."
+            )
+        )
+
+    # ========================================================
+    # QUERY MTN
+    # ========================================================
+
+    try:
+
+        mtn_status = get_payment_status(
+            payment_reference
+        )
+
+    except Exception as e:
+
+        print(
+            "MTN STATUS ERROR:",
+            str(e)
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unable to check "
+                "Mobile Money payment status."
+            )
+        )
+
+    # ========================================================
+    # READ MTN STATUS
+    #
+    # Common MTN statuses include:
+    #
+    # SUCCESSFUL
+    # FAILED
+    # PENDING
+    # REJECTED
+    # ========================================================
+
+    mtn_result = (
+        str(
+            mtn_status.get("status")
+            or ""
+        )
+        .upper()
+    )
+
+    # ========================================================
+    # SUCCESSFUL
+    # ========================================================
+
+    if mtn_result == "SUCCESSFUL":
+
+        paid_at = (
+            datetime.utcnow()
+            .isoformat()
+        )
+
+        update_response = (
+            supabase
+            .table("orders")
+            .update({
+
+                "payment_status":
+                    "paid",
+
+                "payment_method":
+                    "Mobile Money",
+
+                "paid_at":
+                    paid_at
+
+            })
+            .eq(
+                "id",
+                order_id
+            )
+            .execute()
+        )
+
+        if not update_response.data:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "MTN payment was successful "
+                    "but the order could not be "
+                    "updated."
+                )
+            )
+
+        return {
+
+            "order_id":
+                order_id,
+
+            "payment_status":
+                "paid",
+
+            "mtn_status":
+                mtn_result,
+
+            "message":
+                "Payment confirmed successfully."
+        }
+
+    # ========================================================
+    # FAILED
+    # ========================================================
+
+    if mtn_result in [
+        "FAILED",
+        "REJECTED"
+    ]:
+
+        update_response = (
+            supabase
+            .table("orders")
+            .update({
+
+                "payment_status":
+                    "failed"
+
+            })
+            .eq(
+                "id",
+                order_id
+            )
+            .execute()
+        )
+
+        if not update_response.data:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Payment failed at MTN, "
+                    "but the order could not "
+                    "be updated."
+                )
+            )
+
+        return {
+
+            "order_id":
+                order_id,
+
+            "payment_status":
+                "failed",
+
+            "mtn_status":
+                mtn_result,
+
+            "message":
+                "Mobile Money payment failed."
+        }
+
+    # ========================================================
+    # STILL PROCESSING
+    # ========================================================
+
+    return {
 
         "order_id":
             order_id,
 
         "payment_status":
-            "paid",
+            "pending",
 
-        "payment_method":
-            payment.payment_method
+        "mtn_status":
+            mtn_result
+            or "PENDING",
+
+        "message":
+            (
+                "Mobile Money payment is "
+                "still being processed."
+            )
     }
 
 
@@ -600,8 +1100,6 @@ async def pay_order(
 # CANCEL ORDER
 #
 # Only orders that have not been accepted can be cancelled.
-#
-# PUT /orders/{order_id}/cancel
 # ============================================================
 
 @router.put("/orders/{order_id}/cancel")
@@ -678,11 +1176,6 @@ async def cancel_order(
 # ============================================================
 # ACCEPT ORDER
 #
-# Works for:
-#
-# Farmer seller
-# Supplier seller
-#
 # PUT /orders/{order_id}/accept
 # ============================================================
 
@@ -711,20 +1204,15 @@ async def accept_order(
 
     order = order_response.data[0]
 
-    # --------------------------------------------------------
-    # ONLY PLACED ORDERS CAN BE ACCEPTED
-    # --------------------------------------------------------
-
     if order.get("order_status") != "placed":
 
         raise HTTPException(
             status_code=400,
-            detail="Only placed orders can be accepted"
+            detail=(
+                "Only placed orders "
+                "can be accepted"
+            )
         )
-
-    # --------------------------------------------------------
-    # VALIDATE SELLER
-    # --------------------------------------------------------
 
     seller_id = (
         order.get("seller_id")
@@ -754,10 +1242,6 @@ async def accept_order(
             status_code=400,
             detail="Invalid seller type"
         )
-
-    # --------------------------------------------------------
-    # ACCEPT ORDER
-    # --------------------------------------------------------
 
     accept_response = (
         supabase
@@ -810,22 +1294,11 @@ async def accept_order(
 # ============================================================
 # UPDATE ORDER STATUS
 #
-# Generic seller status update.
-#
-# IMPORTANT:
-#
-# completed is NOT allowed here.
+# completed is deliberately blocked.
 #
 # Completion must go through:
 #
 # /orders/{order_id}/complete
-#
-# because that endpoint handles:
-#
-# wallet credit
-# transaction
-# payment verification
-# duplicate protection
 # ============================================================
 
 @router.put("/orders/{order_id}/status")
@@ -861,23 +1334,16 @@ async def update_order_status(
             )
         )
 
-    # --------------------------------------------------------
-    # COMPLETED MUST USE COMPLETE ENDPOINT
-    # --------------------------------------------------------
-
     if status == "completed":
 
         raise HTTPException(
             status_code=400,
             detail=(
-                "Use the complete order endpoint "
-                "to complete an order."
+                "Use the complete order "
+                "endpoint to complete "
+                "an order."
             )
         )
-
-    # --------------------------------------------------------
-    # GET ORDER
-    # --------------------------------------------------------
 
     order_response = (
         supabase
@@ -896,10 +1362,6 @@ async def update_order_status(
             status_code=404,
             detail="Order not found"
         )
-
-    # --------------------------------------------------------
-    # UPDATE STATUS
-    # --------------------------------------------------------
 
     update_response = (
         supabase
@@ -938,15 +1400,12 @@ async def update_order_status(
         "order_status":
             status
     }
-   # ============================================================
+
+
+# ============================================================
 # COMPLETE ORDER
 #
-# This is where the seller gets paid.
-#
-# Works for:
-#
-# Farmer selling produce
-# Supplier selling farm supplies
+# Seller gets paid here.
 #
 # Requirements:
 #
@@ -955,25 +1414,11 @@ async def update_order_status(
 # 3. Order is accepted
 # 4. Seller exists
 #
-# Then:
-#
-# Farmer:
-#     farmer wallet credited
-#
-# Supplier:
-#     supplier wallet credited
-#
-# Both:
-#     transaction created
-#
-# Finally:
-#     order marked completed
-#
 # IMPORTANT:
 #
 # reference_id = order_id
 #
-# is used to prevent duplicate wallet credits.
+# prevents duplicate wallet credits.
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
@@ -1013,7 +1458,9 @@ async def complete_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Buyer has not completed payment."
+            detail=(
+                "Buyer has not completed payment."
+            )
         )
 
     # ========================================================
@@ -1028,14 +1475,17 @@ async def complete_order(
         )
 
     # ========================================================
-    # ONLY ACCEPTED ORDERS CAN BE COMPLETED
+    # ONLY ACCEPTED ORDERS
     # ========================================================
 
     if order.get("order_status") != "accepted":
 
         raise HTTPException(
             status_code=400,
-            detail="Only accepted orders can be completed."
+            detail=(
+                "Only accepted orders "
+                "can be completed."
+            )
         )
 
     # ========================================================
@@ -1087,10 +1537,9 @@ async def complete_order(
         )
 
     # ========================================================
-    # CHECK FOR EXISTING TRANSACTION
+    # CHECK EXISTING TRANSACTION
     #
-    # This prevents the same order from crediting the wallet
-    # more than once.
+    # This prevents duplicate wallet credits.
     # ========================================================
 
     existing_transaction = (
@@ -1109,14 +1558,6 @@ async def complete_order(
     )
 
     if existing_transaction.data:
-
-        # ----------------------------------------------------
-        # A transaction already exists.
-        #
-        # The seller was already credited.
-        #
-        # We can safely make sure the order is completed.
-        # ----------------------------------------------------
 
         existing_order_update = (
             supabase
@@ -1142,8 +1583,9 @@ async def complete_order(
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    "Seller transaction already exists, "
-                    "but order could not be marked completed."
+                    "Seller transaction already "
+                    "exists, but order could not "
+                    "be marked completed."
                 )
             )
 
@@ -1152,7 +1594,8 @@ async def complete_order(
             "message":
                 (
                     "Order was already processed. "
-                    "Seller wallet was not credited again."
+                    "Seller wallet was not "
+                    "credited again."
                 ),
 
             "order_id":
@@ -1183,17 +1626,6 @@ async def complete_order(
 
     # ========================================================
     # FIND SELLER WALLET
-    #
-    # Both farmers and suppliers use:
-    #
-    # seller_id
-    # seller_type
-    #
-    # Farmer:
-    #     seller_type = farmer
-    #
-    # Supplier:
-    #     seller_type = supplier
     # ========================================================
 
     wallet_response = (
@@ -1251,7 +1683,10 @@ async def complete_order(
 
             raise HTTPException(
                 status_code=500,
-                detail="Failed to update seller wallet."
+                detail=(
+                    "Failed to update "
+                    "seller wallet."
+                )
             )
 
     # ========================================================
@@ -1296,7 +1731,10 @@ async def complete_order(
 
             raise HTTPException(
                 status_code=500,
-                detail="Failed to create seller wallet."
+                detail=(
+                    "Failed to create "
+                    "seller wallet."
+                )
             )
 
     # ========================================================
@@ -1360,21 +1798,13 @@ async def complete_order(
 
     if not transaction_response.data:
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # The wallet was already credited at this point.
-        #
-        # We report the failure instead of pretending that
-        # everything completed successfully.
-        # ----------------------------------------------------
-
         raise HTTPException(
             status_code=500,
             detail=(
                 "Seller wallet was credited, "
-                "but transaction creation failed. "
-                "Manual reconciliation may be required."
+                "but transaction creation "
+                "failed. Manual reconciliation "
+                "may be required."
             )
         )
 
@@ -1406,8 +1836,9 @@ async def complete_order(
         raise HTTPException(
             status_code=500,
             detail=(
-                "Seller was credited and transaction "
-                "was created, but order completion "
+                "Seller was credited and "
+                "transaction was created, "
+                "but order completion "
                 "update failed."
             )
         )
@@ -1459,5 +1890,4 @@ async def complete_order(
 
         "already_processed":
             False
-    } 
-    
+    }
