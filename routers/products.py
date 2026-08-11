@@ -12,6 +12,18 @@ router = APIRouter()
 
 # ============================================================
 # CREATE PRODUCT LISTING
+#
+# POST /products
+#
+# Supports:
+#
+# Farmer:
+#   seller_type = farmer
+#   product_type = produce
+#
+# Supplier:
+#   seller_type = supplier
+#   product_type = supply
 # ============================================================
 
 @router.post("/products")
@@ -23,37 +35,59 @@ async def create_product(
     # DETERMINE SELLER
     # ========================================================
 
-    seller_id = product.seller_id or product.farmer_id
+    seller_id = (
+        product.seller_id
+        or product.farmer_id
+    )
 
     if not seller_id:
+
         raise HTTPException(
             status_code=400,
             detail="Seller ID is required"
         )
 
-    seller_type = product.seller_type or "farmer"
+    seller_type = (
+        product.seller_type
+        or "farmer"
+    )
 
-    product_type = product.product_type or "produce"
+    product_type = (
+        product.product_type
+        or "produce"
+    )
+
+    # Normalize values
+
+    seller_type = seller_type.lower().strip()
+
+    product_type = product_type.lower().strip()
 
 
     # ========================================================
     # FARMER COMPATIBILITY
     # ========================================================
 
-    # Existing farmer requests only send farmer_id.
+    # Existing farmer requests may only send:
     #
-    # We preserve that behavior by automatically
-    # treating farmer_id as seller_id.
+    # farmer_id = farmer's user ID
+    #
+    # We preserve that behavior.
 
     farmer_id = product.farmer_id
 
     if seller_type == "farmer":
 
         if not farmer_id:
+
             farmer_id = seller_id
 
 
-    # Suppliers do not need farmer_id.
+    # ========================================================
+    # SUPPLIER COMPATIBILITY
+    # ========================================================
+
+    # Suppliers do not use farmer_id.
 
     if seller_type == "supplier":
 
@@ -100,7 +134,6 @@ async def create_product(
 
     ]
 
-
     if product_type not in allowed_product_types:
 
         raise HTTPException(
@@ -108,8 +141,8 @@ async def create_product(
             detail=(
                 "Invalid product type. "
                 "Use produce, seed, fertilizer, "
-                "pesticide, equipment, other_input, "
-                "or supply."
+                "pesticide, equipment, "
+                "other_input, or supply."
             )
         )
 
@@ -120,7 +153,10 @@ async def create_product(
 
     # Farmers currently sell produce.
 
-    if seller_type == "farmer" and product_type != "produce":
+    if (
+        seller_type == "farmer"
+        and product_type != "produce"
+    ):
 
         raise HTTPException(
             status_code=400,
@@ -131,16 +167,91 @@ async def create_product(
         )
 
 
-    # Suppliers sell agricultural inputs,
-    # equipment and other farm supplies.
+    # Suppliers sell farm supplies.
 
-    if seller_type == "supplier" and product_type == "produce":
+    if (
+        seller_type == "supplier"
+        and product_type != "supply"
+    ):
 
         raise HTTPException(
             status_code=400,
             detail=(
-                "Suppliers should list "
-                "agricultural inputs or equipment."
+                "Suppliers must list "
+                "farm supplies using "
+                "product_type='supply'."
+            )
+        )
+
+
+    # ========================================================
+    # VALIDATE QUANTITY
+    # ========================================================
+
+    if product.quantity <= 0:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Quantity must be greater than zero."
+        )
+
+
+    # ========================================================
+    # VALIDATE PRICE
+    # ========================================================
+
+    if product.price_per_unit <= 0:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Price must be greater than zero."
+        )
+
+
+    # ========================================================
+    # SUPPLIER PRODUCT NAME
+    # ========================================================
+
+    # For suppliers, product_name should normally be
+    # available.
+    #
+    # We keep crop as the compatibility field.
+
+    product_name = (
+        product.product_name
+        or product.crop
+    )
+
+
+    # ========================================================
+    # STATUS
+    # ========================================================
+
+    status = (
+        product.status
+        or "available"
+    )
+
+    status = status.lower().strip()
+
+    allowed_statuses = [
+
+        "available",
+
+        "sold",
+
+        "unavailable"
+
+    ]
+
+    if status not in allowed_statuses:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid product status. "
+                "Use available, sold, "
+                "or unavailable."
             )
         )
 
@@ -151,11 +262,18 @@ async def create_product(
 
     product_data = {
 
-        # Existing farmer architecture
+        # ====================================================
+        # EXISTING FARMER ARCHITECTURE
+        # ====================================================
+
         "farmer_id":
             farmer_id,
 
-        # Seller architecture
+
+        # ====================================================
+        # UNIVERSAL SELLER ARCHITECTURE
+        # ====================================================
+
         "seller_id":
             seller_id,
 
@@ -165,38 +283,24 @@ async def create_product(
         "product_type":
             product_type,
 
-        # Existing product fields
+
+        # ====================================================
+        # PRODUCT INFORMATION
+        # ====================================================
+
         "crop":
             product.crop,
+
+        "product_name":
+            product_name,
 
         "description":
             product.description,
 
-        "quantity":
-            product.quantity,
 
-        "unit":
-            product.unit,
-
-        "price_per_unit":
-            product.price_per_unit,
-
-        "region":
-            product.region,
-
-        "image_url":
-            product.image_url,
-
-        # AI market intelligence
-        "predicted_price":
-            product.predicted_price,
-
-        "ai_recommendation":
-            product.ai_recommendation,
-
-        # Farm Supplies
-        "product_name":
-            product.product_name,
+        # ====================================================
+        # FARM SUPPLIES INFORMATION
+        # ====================================================
 
         "category":
             product.category,
@@ -213,9 +317,64 @@ async def create_product(
         "supplier_location":
             product.supplier_location,
 
-        # Existing status
+
+        # ====================================================
+        # INVENTORY
+        # ====================================================
+
+        "quantity":
+            product.quantity,
+
+        "unit":
+            product.unit,
+
+
+        # ====================================================
+        # PRICE
+        # ====================================================
+
+        "price_per_unit":
+            product.price_per_unit,
+
+
+        # ====================================================
+        # LOCATION
+        # ====================================================
+
+        "region":
+            product.region,
+
+
+        # ====================================================
+        # IMAGE
+        # ====================================================
+
+        "image_url":
+            product.image_url,
+
+
+        # ====================================================
+        # PRODUCT STATUS
+        # ====================================================
+
         "status":
-            "available",
+            status,
+
+
+        # ====================================================
+        # AI MARKET INTELLIGENCE
+        # ====================================================
+
+        "predicted_price":
+            product.predicted_price,
+
+        "ai_recommendation":
+            product.ai_recommendation,
+
+
+        # ====================================================
+        # TIMESTAMP
+        # ====================================================
 
         "created_at":
             datetime.utcnow().isoformat()
@@ -240,15 +399,32 @@ async def create_product(
 
         )
 
+        if not response.data:
+
+            raise HTTPException(
+                status_code=500,
+                detail="Product could not be created."
+            )
+
+
+        # ====================================================
+        # RESPONSE
+        # ====================================================
+
         return {
 
             "message":
                 "Product listed successfully",
 
             "product":
-                response.data
+                response.data[0]
 
         }
+
+
+    except HTTPException:
+
+        raise
 
 
     except Exception as e:
@@ -264,6 +440,10 @@ async def create_product(
 
 # ============================================================
 # GET AVAILABLE PRODUCTS
+#
+# GET /products
+#
+# Returns all available marketplace products.
 # ============================================================
 
 @router.get("/products")
@@ -309,6 +489,10 @@ async def get_products():
 
 # ============================================================
 # GET PRODUCE PRODUCTS
+#
+# GET /products/produce
+#
+# Farmer marketplace.
 # ============================================================
 
 @router.get("/products/produce")
@@ -359,6 +543,10 @@ async def get_produce_products():
 
 # ============================================================
 # GET FARM SUPPLIES
+#
+# GET /products/supplies
+#
+# Public farm-supplies marketplace.
 # ============================================================
 
 @router.get("/products/supplies")
@@ -409,6 +597,10 @@ async def get_farm_supplies():
 
 # ============================================================
 # GET FARMER PRODUCTS
+#
+# GET /products/farmer/{farmer_id}
+#
+# Farmer's own listings.
 # ============================================================
 
 @router.get("/products/farmer/{farmer_id}")
@@ -429,6 +621,11 @@ async def farmer_products(
             .eq(
                 "farmer_id",
                 farmer_id
+            )
+
+            .eq(
+                "seller_type",
+                "farmer"
             )
 
             .order(
@@ -456,6 +653,10 @@ async def farmer_products(
 
 # ============================================================
 # GET SUPPLIER PRODUCTS
+#
+# GET /products/supplier/{supplier_id}
+#
+# Supplier's own farm-supply listings.
 # ============================================================
 
 @router.get("/products/supplier/{supplier_id}")
@@ -507,7 +708,9 @@ async def supplier_products(
 
 
 # ============================================================
-# SINGLE PRODUCT
+# GET SINGLE PRODUCT
+#
+# GET /products/{product_id}
 # ============================================================
 
 @router.get("/products/{product_id}")
@@ -567,6 +770,8 @@ async def get_product(
 
 # ============================================================
 # DELETE PRODUCT
+#
+# DELETE /products/{product_id}
 # ============================================================
 
 @router.delete("/products/{product_id}")
@@ -594,15 +799,31 @@ async def delete_product(
         )
 
 
+        if not response.data:
+
+            raise HTTPException(
+
+                status_code=404,
+
+                detail="Product not found"
+
+            )
+
+
         return {
 
             "message":
                 "Product deleted successfully",
 
             "product":
-                response.data
+                response.data[0]
 
         }
+
+
+    except HTTPException:
+
+        raise
 
 
     except Exception as e:
