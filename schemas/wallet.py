@@ -2,13 +2,9 @@ from pydantic import BaseModel, Field
 from enum import Enum
 
 
-
 class MobileNetwork(str, Enum):
-
     MTN = "MTN"
-
     AIRTEL = "AIRTEL"
-
 
 
 # =====================================
@@ -18,7 +14,6 @@ class MobileNetwork(str, Enum):
 class WalletCreate(BaseModel):
 
     farmer_id: str
-
 
 
 # =====================================
@@ -36,7 +31,7 @@ class WalletEarning(BaseModel):
     )
 
     reference_id: str | None = None
-    
+
     description: str = "Marketplace sale"
 
 
@@ -46,6 +41,13 @@ class WalletEarning(BaseModel):
 
 class WithdrawalCreate(BaseModel):
 
+    # Kept for backward compatibility.
+    #
+    # For farmers:
+    # this is the farmer UUID.
+    #
+    # For suppliers/businesses:
+    # this contains the seller UUID.
     farmer_id: str
 
     amount: float = Field(
@@ -61,3 +63,19 @@ class WithdrawalCreate(BaseModel):
     )
 
     network: MobileNetwork
+
+    # =================================
+    # SELLER TYPE
+    # =================================
+    #
+    # farmer  -> existing farmer wallet
+    # supplier -> supplier/business wallet
+    #
+    # Defaults to farmer so existing
+    # farmer requests do not change.
+    #
+
+    seller_type: str = Field(
+        default="farmer",
+        description="Wallet seller type: farmer or supplier"
+    )
