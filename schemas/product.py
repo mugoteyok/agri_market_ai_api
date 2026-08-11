@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel
 from typing import Optional
 
@@ -17,15 +16,17 @@ class ProductCreate(BaseModel):
     #
     # Existing farmer requests can continue sending:
     # farmer_id = farmer's user ID
+
     farmer_id: Optional[str] = None
 
     # Universal seller architecture.
     #
     # Farmer:
-    # seller_type = farmer
+    # seller_type = "farmer"
     #
     # Supplier:
-    # seller_type = supplier
+    # seller_type = "supplier"
+
     seller_id: Optional[str] = None
 
     seller_type: Optional[str] = "farmer"
@@ -35,21 +36,15 @@ class ProductCreate(BaseModel):
     # PRODUCT TYPE
     # ========================================================
 
-    # Existing supported types:
+    # Supported marketplace types:
     #
     # produce
+    # supply
     # seed
     # fertilizer
     # pesticide
     # equipment
     # other_input
-    #
-    # New marketplace type:
-    #
-    # supply
-    #
-    # Existing requests that don't provide this field
-    # will continue to default to produce.
 
     product_type: Optional[str] = "produce"
 
@@ -60,14 +55,12 @@ class ProductCreate(BaseModel):
 
     # Kept as required for backward compatibility.
     #
-    # Existing produce:
+    # Produce example:
     # crop = "Coffee"
     #
-    # Farm Supplies compatibility:
+    # Farm supply example:
     # crop = "Improved Maize Seed"
-    #
-    # Later we can make this optional after updating the
-    # database/API architecture more broadly.
+
     crop: str
 
     description: Optional[str] = ""
@@ -154,6 +147,19 @@ class ProductCreate(BaseModel):
     # ========================================================
 
     rating: Optional[float] = 0
+
+
+    # ========================================================
+    # PRODUCT STATUS
+    # ========================================================
+
+    # Marketplace status.
+    #
+    # available
+    # sold
+    # unavailable
+
+    status: Optional[str] = "available"
 
 
     # ========================================================
@@ -253,6 +259,13 @@ class ProductResponse(BaseModel):
 
 
     # ========================================================
+    # PRODUCT STATUS
+    # ========================================================
+
+    status: str
+
+
+    # ========================================================
     # AI MARKET INTELLIGENCE
     # ========================================================
 
@@ -262,10 +275,7 @@ class ProductResponse(BaseModel):
 
 
     # ========================================================
-    # STATUS
+    # TIMESTAMP
     # ========================================================
 
-    status: str
-
     created_at: str
-
