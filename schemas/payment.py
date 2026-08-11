@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel, Field
 
 
@@ -9,10 +8,8 @@ class PaymentRequest(BaseModel):
         example="Mobile Money"
     )
 
-    phone_number: str = Field(
+    mobile_number: str = Field(
         ...,
-        min_length=9,
-        max_length=15,
-        example="256770123456"
+        example="0772123456",
+        description="Uganda Mobile Money phone number"
     )
-
