@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 
 from routers.products import router as products_router
@@ -6,6 +5,7 @@ from routers.orders import router as orders_router
 from routers.forecast import router as forecast_router
 from routers.wallet import router as wallet_router
 from routers.promotions import router as promotions_router
+from routers.recommendations import router as recommendations_router
 
 
 app = FastAPI(
@@ -21,6 +21,7 @@ app = FastAPI(
 # ============================================================
 # MARKETPLACE ROUTERS
 # ============================================================
+
 
 # ============================================================
 # PRODUCTS
@@ -80,6 +81,20 @@ app.include_router(
 
 
 # ============================================================
+# AI FARM SUPPLY RECOMMENDATIONS
+#
+# Disease diagnosis → crop → recommendations
+# → relevant Farm Supplies
+# ============================================================
+
+app.include_router(
+    recommendations_router,
+    prefix="/api/marketplace",
+    tags=["Recommendations"]
+)
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -87,27 +102,18 @@ app.include_router(
 def home():
 
     return {
+        "message": "Agri Market AI Backend Running",
 
-        "message":
-            "Agri Market AI Backend Running",
-
-        "status":
-            "healthy",
+        "status": "healthy",
 
         "services": [
-
             "Products API",
-
             "Orders API",
-
             "AI Price Forecast",
-
             "Farmer Wallet",
-
-            "Product Promotions"
-
+            "Product Promotions",
+            "AI Farm Supply Recommendations"
         ]
-
     }
 
 
@@ -119,31 +125,24 @@ def home():
 def marketplace_health():
 
     return {
+        "service": "Agri Market AI Marketplace",
 
-        "service":
-            "Agri Market AI Marketplace",
-
-        "status":
-            "running",
+        "status": "running",
 
         "modules": {
 
-            "products":
-                "active",
+            "products": "active",
 
-            "orders":
-                "active",
+            "orders": "active",
 
-            "forecast":
-                "active",
+            "forecast": "active",
 
-            "wallet":
-                "active",
+            "wallet": "active",
 
-            "promotions":
-                "active"
+            "promotions": "active",
+
+            "recommendations": "active"
 
         }
 
     }
-
