@@ -7,11 +7,10 @@ from schemas.payment import PaymentRequest
 
 from services.mtn_service import (
     request_payment,
-    get_payment_status
+    get_payment_status,
 )
 
 from datetime import datetime
-
 import uuid
 
 
@@ -19,14 +18,201 @@ router = APIRouter()
 
 
 # ============================================================
+# RELEASE RESERVED STOCK
+# ============================================================
+#
+# Returns reserved product stock to the marketplace.
+#
+# This function is designed to be idempotent:
+#
+# If stock has already been released,
+# it will not be released again.
+#
+# Used when:
+#
+# - Buyer cancels an unpaid order
+# - MTN payment fails
+# - Order creation needs stock recovery
+#
+# ============================================================
+
+async def release_reserved_stock(order):
+    """
+    Release reserved product stock.
+
+    Returns:
+        True  -> stock was released
+        False -> nothing needed to be released
+    """
+
+    # ========================================================
+    # CHECK WHETHER STOCK WAS RESERVED
+    # ========================================================
+
+    if not order.get("stock_reserved"):
+
+        return False
+
+    # ========================================================
+    # PREVENT DOUBLE RELEASE
+    # ========================================================
+
+    if order.get("stock_released"):
+
+        return False
+
+    # ========================================================
+    # GET PRODUCT INFORMATION
+    # ========================================================
+
+    product_id = order.get("product_id")
+
+    quantity = float(
+        order.get("quantity") or 0
+    )
+
+    if not product_id or quantity <= 0:
+
+        return False
+
+    # ========================================================
+    # GET CURRENT PRODUCT
+    # ========================================================
+
+    product_response = (
+        supabase
+        .table("products")
+        .select(
+            "id, quantity, status"
+        )
+        .eq(
+            "id",
+            product_id
+        )
+        .execute()
+    )
+
+    if not product_response.data:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Product no longer exists. "
+                "Reserved stock could not be restored."
+            ),
+        )
+
+    product = product_response.data[0]
+
+    current_quantity = float(
+        product.get("quantity") or 0
+    )
+
+    restored_quantity = (
+        current_quantity +
+        quantity
+    )
+
+    # ========================================================
+    # RESTORE STOCK
+    # ========================================================
+
+    product_update = {
+        "quantity": restored_quantity,
+        "status": "available",
+    }
+
+    stock_response = (
+        supabase
+        .table("products")
+        .update(product_update)
+        .eq(
+            "id",
+            product_id
+        )
+        .execute()
+    )
+
+    if not stock_response.data:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to restore reserved stock."
+            ),
+        )
+
+    # ========================================================
+    # MARK STOCK AS RELEASED
+    # ========================================================
+
+    order_id = order.get("id")
+
+    if not order_id:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Order ID is missing. "
+                "Stock was restored but release "
+                "could not be recorded."
+            ),
+        )
+
+    order_update = (
+        supabase
+        .table("orders")
+        .update({
+            "stock_released": True,
+            "stock_reserved": False,
+        })
+        .eq(
+            "id",
+            order_id
+        )
+        .eq(
+            "stock_released",
+            False
+        )
+        .execute()
+    )
+
+    if not order_update.data:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Stock was restored but the "
+                "order could not be marked "
+                "as released."
+            ),
+        )
+
+    return True
+
+
+# ============================================================
 # CREATE ORDER
+# ============================================================
 #
 # POST /api/marketplace/orders
 #
 # Works for:
 #
-# Farmer selling produce
-# Supplier selling farm supplies
+# - Farmer selling produce
+# - Supplier selling farm supplies
+#
+# IMPORTANT:
+#
+# Stock is reserved BEFORE the order is created.
+#
+# The stock update uses:
+#
+#     .gte("quantity", requested_quantity)
+#
+# so the database only updates the product if
+# enough stock still exists at the time of the update.
+#
 # ============================================================
 
 @router.post("/orders")
@@ -53,7 +239,7 @@ async def create_order(
 
         raise HTTPException(
             status_code=404,
-            detail="Product not found"
+            detail="Product not found",
         )
 
     product = product_response.data[0]
@@ -62,11 +248,14 @@ async def create_order(
     # CHECK PRODUCT STATUS
     # ========================================================
 
-    if product.get("status") != "available":
+    if product.get("status") not in [
+        "available",
+        "active",
+    ]:
 
         raise HTTPException(
             status_code=400,
-            detail="Product is no longer available"
+            detail="Product is no longer available",
         )
 
     # ========================================================
@@ -77,18 +266,22 @@ async def create_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Quantity must be greater than zero"
+            detail="Quantity must be greater than zero",
         )
+
+    quantity = float(
+        order.quantity
+    )
 
     available_quantity = float(
         product.get("quantity") or 0
     )
 
-    if order.quantity > available_quantity:
+    if quantity > available_quantity:
 
         raise HTTPException(
             status_code=400,
-            detail="Insufficient product quantity"
+            detail="Insufficient product quantity",
         )
 
     # ========================================================
@@ -114,7 +307,7 @@ async def create_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Product does not have a seller"
+            detail="Product does not have a seller",
         )
 
     seller_type = seller_type.lower()
@@ -126,12 +319,12 @@ async def create_order(
 
     if seller_type not in [
         "farmer",
-        "supplier"
+        "supplier",
     ]:
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid seller type"
+            detail="Invalid seller type",
         )
 
     # ========================================================
@@ -140,21 +333,17 @@ async def create_order(
 
     if product_type not in [
         "produce",
-        "supply"
+        "supply",
     ]:
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid product type"
+            detail="Invalid product type",
         )
 
     # ========================================================
     # PRICE
     # ========================================================
-
-    quantity = float(
-        order.quantity
-    )
 
     price_per_unit = float(
         product.get("price_per_unit") or 0
@@ -164,7 +353,7 @@ async def create_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid product price"
+            detail="Invalid product price",
         )
 
     total_amount = (
@@ -181,6 +370,76 @@ async def create_order(
     if seller_type == "farmer":
 
         farmer_id = seller_id
+
+    # ========================================================
+    # RESERVE STOCK
+    # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # We reserve stock BEFORE creating the order.
+    #
+    # The WHERE condition:
+    #
+    #     quantity >= requested quantity
+    #
+    # prevents an order from reserving stock when the
+    # product quantity has already fallen below the
+    # requested amount.
+    #
+    # ========================================================
+
+    new_quantity = (
+        available_quantity -
+        quantity
+    )
+
+    product_update = {
+        "quantity": new_quantity,
+    }
+
+    # ========================================================
+    # PRODUCT IS NOW OUT OF AVAILABLE STOCK
+    # ========================================================
+
+    if new_quantity <= 0:
+
+        product_update["quantity"] = 0
+        product_update["status"] = "sold"
+
+    # ========================================================
+    # CONDITIONAL STOCK UPDATE
+    # ========================================================
+
+    stock_response = (
+        supabase
+        .table("products")
+        .update(product_update)
+        .eq(
+            "id",
+            order.product_id
+        )
+        .gte(
+            "quantity",
+            quantity
+        )
+        .execute()
+    )
+
+    # ========================================================
+    # STOCK RESERVATION FAILED
+    # ========================================================
+
+    if not stock_response.data:
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Product stock changed before "
+                "your order could be reserved. "
+                "Please refresh and try again."
+            ),
+        )
 
     # ========================================================
     # CREATE ORDER
@@ -207,7 +466,8 @@ async def create_order(
             order.product_id,
 
         "crop":
-            product.get("crop"),
+            product.get("crop")
+            or product.get("product_name"),
 
         "price_per_unit":
             price_per_unit,
@@ -233,67 +493,157 @@ async def create_order(
         "status":
             "pending",
 
+        # ====================================================
+        # INVENTORY TRACKING
+        # ====================================================
+
+        "stock_reserved":
+            True,
+
+        "stock_released":
+            False,
+
         "created_at":
-            datetime.utcnow().isoformat()
+            datetime.utcnow().isoformat(),
     }
 
-    order_response = (
-        supabase
-        .table("orders")
-        .insert(new_order)
-        .execute()
-    )
+    # ========================================================
+    # INSERT ORDER
+    # ========================================================
 
-    if not order_response.data:
+    try:
+
+        order_response = (
+            supabase
+            .table("orders")
+            .insert(new_order)
+            .execute()
+        )
+
+    except Exception as e:
+
+        print(
+            "ORDER INSERT FAILED:",
+            str(e)
+        )
+
+        # ====================================================
+        # RESTORE STOCK
+        # ====================================================
+
+        restore_response = (
+            supabase
+            .table("products")
+            .select(
+                "quantity"
+            )
+            .eq(
+                "id",
+                order.product_id
+            )
+            .execute()
+        )
+
+        if restore_response.data:
+
+            current_quantity = float(
+                restore_response.data[0].get(
+                    "quantity"
+                ) or 0
+            )
+
+            restored_quantity = (
+                current_quantity +
+                quantity
+            )
+
+            (
+                supabase
+                .table("products")
+                .update({
+
+                    "quantity":
+                        restored_quantity,
+
+                    "status":
+                        "available",
+
+                })
+                .eq(
+                    "id",
+                    order.product_id
+                )
+                .execute()
+            )
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to create order"
+            detail="Failed to create order",
+        )
+
+    # ========================================================
+    # ORDER INSERT RETURNED NO DATA
+    # ========================================================
+
+    if not order_response.data:
+
+        # ====================================================
+        # SAFETY RELEASE
+        # ====================================================
+
+        restore_response = (
+            supabase
+            .table("products")
+            .select(
+                "quantity"
+            )
+            .eq(
+                "id",
+                order.product_id
+            )
+            .execute()
+        )
+
+        if restore_response.data:
+
+            current_quantity = float(
+                restore_response.data[0].get(
+                    "quantity"
+                ) or 0
+            )
+
+            restored_quantity = (
+                current_quantity +
+                quantity
+            )
+
+            (
+                supabase
+                .table("products")
+                .update({
+
+                    "quantity":
+                        restored_quantity,
+
+                    "status":
+                        "available",
+
+                })
+                .eq(
+                    "id",
+                    order.product_id
+                )
+                .execute()
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create order",
         )
 
     created_order = (
         order_response.data[0]
     )
-
-    # ========================================================
-    # REDUCE PRODUCT STOCK
-    # ========================================================
-
-    remaining_quantity = (
-        available_quantity -
-        quantity
-    )
-
-    product_update = {
-
-        "quantity":
-            remaining_quantity
-    }
-
-    if remaining_quantity <= 0:
-
-        product_update["quantity"] = 0
-
-        product_update["status"] = "sold"
-
-    stock_response = (
-        supabase
-        .table("products")
-        .update(product_update)
-        .eq(
-            "id",
-            order.product_id
-        )
-        .execute()
-    )
-
-    if not stock_response.data:
-
-        print(
-            "WARNING: Order created but "
-            "product stock update failed.",
-            order.product_id
-        )
 
     # ========================================================
     # RESPONSE
@@ -305,14 +655,19 @@ async def create_order(
             "Order created successfully",
 
         "order":
-            created_order
+            created_order,
+
+        "stock_reserved":
+            True,
     }
 
 
 # ============================================================
 # FARMER ORDERS
+# ============================================================
 #
 # GET /orders/farmer/{farmer_id}
+#
 # ============================================================
 
 @router.get("/orders/farmer/{farmer_id}")
@@ -344,8 +699,10 @@ async def farmer_orders(
 
 # ============================================================
 # SUPPLIER ORDERS
+# ============================================================
 #
 # GET /orders/supplier/{supplier_id}
+#
 # ============================================================
 
 @router.get("/orders/supplier/{supplier_id}")
@@ -377,8 +734,10 @@ async def supplier_orders(
 
 # ============================================================
 # GENERIC SELLER ORDERS
+# ============================================================
 #
 # GET /orders/seller/{seller_id}
+#
 # ============================================================
 
 @router.get("/orders/seller/{seller_id}")
@@ -406,8 +765,10 @@ async def seller_orders(
 
 # ============================================================
 # BUYER ORDERS
+# ============================================================
 #
 # GET /orders/buyer/{buyer_id}
+#
 # ============================================================
 
 @router.get("/orders/buyer/{buyer_id}")
@@ -435,8 +796,10 @@ async def buyer_orders(
 
 # ============================================================
 # GET SINGLE ORDER
+# ============================================================
 #
 # GET /orders/{order_id}
+#
 # ============================================================
 
 @router.get("/orders/{order_id}")
@@ -459,7 +822,7 @@ async def get_order_details(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
 
     return response.data[0]
@@ -467,6 +830,7 @@ async def get_order_details(
 
 # ============================================================
 # PAY ORDER
+# ============================================================
 #
 # POST /orders/{order_id}/payment
 #
@@ -477,6 +841,7 @@ async def get_order_details(
 # It does NOT immediately mark the order paid.
 #
 # MTN RequestToPay is asynchronous.
+#
 # ============================================================
 
 @router.post("/orders/{order_id}/payment")
@@ -504,7 +869,7 @@ async def pay_order(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
 
     order = order_response.data[0]
@@ -517,7 +882,7 @@ async def pay_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Order already paid"
+            detail="Order already paid",
         )
 
     # ========================================================
@@ -552,7 +917,7 @@ async def pay_order(
                 "payment_method":
                     order.get(
                         "payment_method"
-                    )
+                    ),
             }
 
     # ========================================================
@@ -561,7 +926,7 @@ async def pay_order(
 
     if order.get("order_status") not in [
         "placed",
-        "accepted"
+        "accepted",
     ]:
 
         raise HTTPException(
@@ -569,7 +934,7 @@ async def pay_order(
             detail=(
                 "Order cannot be paid in "
                 "its current state"
-            )
+            ),
         )
 
     # ========================================================
@@ -584,19 +949,17 @@ async def pay_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid order amount"
+            detail="Invalid order amount",
         )
 
     # ========================================================
     # BUYER PHONE NUMBER
     # ========================================================
 
-    phone_number = (
-        getattr(
-            payment,
-            "mobile_number",
-            None
-        )
+    phone_number = getattr(
+        payment,
+        "mobile_number",
+        None,
     )
 
     if not phone_number:
@@ -606,7 +969,7 @@ async def pay_order(
             detail=(
                 "Buyer Mobile Money phone "
                 "number is required."
-            )
+            ),
         )
 
     # ========================================================
@@ -626,9 +989,7 @@ async def pay_order(
         )
     )
 
-    if phone_number.startswith(
-        "0"
-    ):
+    if phone_number.startswith("0"):
 
         phone_number = (
             "256"
@@ -646,19 +1007,17 @@ async def pay_order(
             detail=(
                 "Invalid Mobile Money "
                 "phone number."
-            )
+            ),
         )
 
-    if not phone_number.startswith(
-        "256"
-    ):
+    if not phone_number.startswith("256"):
 
         raise HTTPException(
             status_code=400,
             detail=(
                 "Use a valid Uganda Mobile "
                 "Money number."
-            )
+            ),
         )
 
     # ========================================================
@@ -691,7 +1050,7 @@ async def pay_order(
 
             payee_note=(
                 "Marketplace order payment"
-            )
+            ),
         )
 
     except Exception as e:
@@ -706,7 +1065,7 @@ async def pay_order(
             detail=(
                 "Unable to initiate "
                 "Mobile Money payment."
-            )
+            ),
         )
 
     # ========================================================
@@ -725,7 +1084,7 @@ async def pay_order(
             detail=(
                 "MTN did not accept "
                 "the payment request."
-            )
+            ),
         )
 
     # ========================================================
@@ -741,7 +1100,7 @@ async def pay_order(
             "Mobile Money",
 
         "payment_reference":
-            payment_reference
+            payment_reference,
     }
 
     payment_update_response = (
@@ -763,7 +1122,7 @@ async def pay_order(
                 "MTN payment request was "
                 "accepted, but the order "
                 "could not be updated."
-            )
+            ),
         )
 
     # ========================================================
@@ -797,22 +1156,30 @@ async def pay_order(
             (
                 "Buyer must approve the "
                 "Mobile Money payment."
-            )
+            ),
     }
 
 
 # ============================================================
 # CHECK PAYMENT STATUS
+# ============================================================
 #
 # GET /orders/{order_id}/payment-status
 #
-# Only SUCCESSFUL becomes:
+# SUCCESSFUL:
 #
-# payment_status = paid
+#     payment_status = paid
 #
-# FAILED becomes:
+# FAILED:
 #
-# payment_status = failed
+#     payment_status = failed
+#
+# IMPORTANT:
+#
+# Failed payments release reserved stock.
+#
+# Successful payments KEEP reserved stock.
+#
 # ============================================================
 
 @router.get(
@@ -841,7 +1208,7 @@ async def check_payment_status(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
 
     order = order_response.data[0]
@@ -861,7 +1228,7 @@ async def check_payment_status(
                 "paid",
 
             "message":
-                "Payment already confirmed."
+                "Payment already confirmed.",
         }
 
     # ========================================================
@@ -880,7 +1247,7 @@ async def check_payment_status(
                 "No Mobile Money payment "
                 "has been initiated for "
                 "this order."
-            )
+            ),
         )
 
     # ========================================================
@@ -905,7 +1272,7 @@ async def check_payment_status(
             detail=(
                 "Unable to check "
                 "Mobile Money payment status."
-            )
+            ),
         )
 
     # ========================================================
@@ -922,6 +1289,10 @@ async def check_payment_status(
 
     # ========================================================
     # SUCCESSFUL
+    #
+    # DO NOT RELEASE STOCK.
+    #
+    # The stock reservation becomes a committed sale.
     # ========================================================
 
     if mtn_result == "SUCCESSFUL":
@@ -943,7 +1314,7 @@ async def check_payment_status(
                     "Mobile Money",
 
                 "paid_at":
-                    paid_at
+                    paid_at,
 
             })
             .eq(
@@ -961,7 +1332,7 @@ async def check_payment_status(
                     "MTN payment was successful "
                     "but the order could not be "
                     "updated."
-                )
+                ),
             )
 
         return {
@@ -975,18 +1346,38 @@ async def check_payment_status(
             "mtn_status":
                 mtn_result,
 
+            "stock_released":
+                False,
+
             "message":
-                "Payment confirmed successfully."
+                "Payment confirmed successfully.",
         }
 
     # ========================================================
     # FAILED
+    #
+    # RELEASE RESERVED STOCK.
     # ========================================================
 
     if mtn_result in [
         "FAILED",
-        "REJECTED"
+        "REJECTED",
     ]:
+
+        # ====================================================
+        # RELEASE RESERVED STOCK
+        # ====================================================
+
+        await release_reserved_stock(
+            order
+        )
+
+        # ====================================================
+        # MARK PAYMENT FAILED
+        #
+        # Also cancel the order because the buyer did not
+        # complete payment.
+        # ====================================================
 
         update_response = (
             supabase
@@ -994,7 +1385,13 @@ async def check_payment_status(
             .update({
 
                 "payment_status":
-                    "failed"
+                    "failed",
+
+                "order_status":
+                    "cancelled",
+
+                "status":
+                    "cancelled",
 
             })
             .eq(
@@ -1012,7 +1409,7 @@ async def check_payment_status(
                     "Payment failed at MTN, "
                     "but the order could not "
                     "be updated."
-                )
+                ),
             )
 
         return {
@@ -1023,11 +1420,20 @@ async def check_payment_status(
             "payment_status":
                 "failed",
 
+            "order_status":
+                "cancelled",
+
             "mtn_status":
                 mtn_result,
 
+            "stock_released":
+                True,
+
             "message":
-                "Mobile Money payment failed."
+                (
+                    "Mobile Money payment failed. "
+                    "Reserved stock has been released."
+                ),
         }
 
     # ========================================================
@@ -1046,24 +1452,39 @@ async def check_payment_status(
             mtn_result
             or "PENDING",
 
+        "stock_released":
+            False,
+
         "message":
             (
                 "Mobile Money payment is "
                 "still being processed."
-            )
+            ),
     }
 
 
 # ============================================================
 # CANCEL ORDER
+# ============================================================
 #
-# Only orders that have not been accepted can be cancelled.
+# PUT /orders/{order_id}/cancel
+#
+# ONLY unpaid placed orders can be cancelled.
+#
+# When cancelled:
+#
+#     reserved stock -> released
+#
 # ============================================================
 
 @router.put("/orders/{order_id}/cancel")
 async def cancel_order(
     order_id: str
 ):
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
 
     order_response = (
         supabase
@@ -1080,17 +1501,49 @@ async def cancel_order(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
 
     order = order_response.data[0]
+
+    # ========================================================
+    # ONLY PLACED ORDERS CAN BE CANCELLED
+    # ========================================================
 
     if order.get("order_status") != "placed":
 
         raise HTTPException(
             status_code=400,
-            detail="Order cannot be cancelled"
+            detail="Order cannot be cancelled",
         )
+
+    # ========================================================
+    # PAID ORDERS CANNOT BE CANCELLED HERE
+    # ========================================================
+
+    if order.get("payment_status") == "paid":
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Paid orders cannot be cancelled "
+                "through this endpoint."
+            ),
+        )
+
+    # ========================================================
+    # RELEASE RESERVED STOCK
+    # ========================================================
+
+    stock_released = (
+        await release_reserved_stock(
+            order
+        )
+    )
+
+    # ========================================================
+    # CANCEL ORDER
+    # ========================================================
 
     cancel_response = (
         supabase
@@ -1101,7 +1554,7 @@ async def cancel_order(
                 "cancelled",
 
             "status":
-                "cancelled"
+                "cancelled",
 
         })
         .eq(
@@ -1115,8 +1568,12 @@ async def cancel_order(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to cancel order"
+            detail="Failed to cancel order",
         )
+
+    # ========================================================
+    # RESPONSE
+    # ========================================================
 
     return {
 
@@ -1127,20 +1584,34 @@ async def cancel_order(
             order_id,
 
         "order_status":
-            "cancelled"
+            "cancelled",
+
+        "stock_released":
+            stock_released,
     }
 
 
 # ============================================================
 # ACCEPT ORDER
+# ============================================================
 #
 # PUT /orders/{order_id}/accept
+#
+# Used by:
+#
+# - Farmer selling produce
+# - Supplier selling farm supplies
+#
 # ============================================================
 
 @router.put("/orders/{order_id}/accept")
 async def accept_order(
     order_id: str
 ):
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
 
     order_response = (
         supabase
@@ -1157,10 +1628,14 @@ async def accept_order(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
 
     order = order_response.data[0]
+
+    # ========================================================
+    # ONLY PLACED ORDERS CAN BE ACCEPTED
+    # ========================================================
 
     if order.get("order_status") != "placed":
 
@@ -1169,8 +1644,12 @@ async def accept_order(
             detail=(
                 "Only placed orders "
                 "can be accepted"
-            )
+            ),
         )
+
+    # ========================================================
+    # DETERMINE SELLER
+    # ========================================================
 
     seller_id = (
         order.get("seller_id")
@@ -1186,20 +1665,28 @@ async def accept_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Order seller is missing"
+            detail="Order seller is missing",
         )
 
     seller_type = seller_type.lower()
 
+    # ========================================================
+    # VALIDATE SELLER TYPE
+    # ========================================================
+
     if seller_type not in [
         "farmer",
-        "supplier"
+        "supplier",
     ]:
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid seller type"
+            detail="Invalid seller type",
         )
+
+    # ========================================================
+    # ACCEPT ORDER
+    # ========================================================
 
     accept_response = (
         supabase
@@ -1213,7 +1700,7 @@ async def accept_order(
                 "accepted",
 
             "accepted_at":
-                datetime.utcnow().isoformat()
+                datetime.utcnow().isoformat(),
 
         })
         .eq(
@@ -1227,7 +1714,7 @@ async def accept_order(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to accept order"
+            detail="Failed to accept order",
         )
 
     return {
@@ -1245,18 +1732,22 @@ async def accept_order(
             seller_type,
 
         "order_status":
-            "accepted"
+            "accepted",
     }
 
 
 # ============================================================
 # UPDATE ORDER STATUS
+# ============================================================
 #
-# completed is deliberately blocked.
+# PUT /orders/{order_id}/status
+#
+# `completed` is deliberately blocked.
 #
 # Completion must go through:
 #
-# /orders/{order_id}/complete
+#     /orders/{order_id}/complete
+#
 # ============================================================
 
 @router.put("/orders/{order_id}/status")
@@ -1277,10 +1768,14 @@ async def update_order_status(
 
         "completed",
 
-        "cancelled"
+        "cancelled",
     ]
 
     status = status.lower()
+
+    # ========================================================
+    # VALIDATE STATUS
+    # ========================================================
 
     if status not in allowed_statuses:
 
@@ -1289,8 +1784,12 @@ async def update_order_status(
             detail=(
                 "Invalid order status. "
                 f"Allowed: {allowed_statuses}"
-            )
+            ),
         )
+
+    # ========================================================
+    # COMPLETION MUST USE DEDICATED ENDPOINT
+    # ========================================================
 
     if status == "completed":
 
@@ -1300,8 +1799,12 @@ async def update_order_status(
                 "Use the complete order "
                 "endpoint to complete "
                 "an order."
-            )
+            ),
         )
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
 
     order_response = (
         supabase
@@ -1318,8 +1821,12 @@ async def update_order_status(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
+
+    # ========================================================
+    # UPDATE STATUS
+    # ========================================================
 
     update_response = (
         supabase
@@ -1330,7 +1837,7 @@ async def update_order_status(
                 status,
 
             "status":
-                status
+                status,
 
         })
         .eq(
@@ -1344,7 +1851,7 @@ async def update_order_status(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to update order status"
+            detail="Failed to update order status",
         )
 
     return {
@@ -1356,12 +1863,15 @@ async def update_order_status(
             order_id,
 
         "order_status":
-            status
+            status,
     }
 
 
 # ============================================================
 # COMPLETE ORDER
+# ============================================================
+#
+# PUT /orders/{order_id}/complete
 #
 # Seller gets paid here.
 #
@@ -1376,7 +1886,12 @@ async def update_order_status(
 #
 # reference_id = order_id
 #
-# prevents duplicate wallet credits.
+# This prevents duplicate wallet credits.
+#
+# Stock is NOT changed here.
+#
+# Stock was already reserved when the order was created.
+#
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
@@ -1403,7 +1918,7 @@ async def complete_order(
 
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found",
         )
 
     order = order_response.data[0]
@@ -1418,7 +1933,7 @@ async def complete_order(
             status_code=400,
             detail=(
                 "Buyer has not completed payment."
-            )
+            ),
         )
 
     # ========================================================
@@ -1429,7 +1944,7 @@ async def complete_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Order already completed."
+            detail="Order already completed.",
         )
 
     # ========================================================
@@ -1446,7 +1961,7 @@ async def complete_order(
             detail=(
                 "Only accepted or ready orders "
                 "can be completed."
-            )
+            ),
         )
 
     # ========================================================
@@ -1467,19 +1982,23 @@ async def complete_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Seller ID is missing."
+            detail="Seller ID is missing.",
         )
 
     seller_type = seller_type.lower()
 
+    # ========================================================
+    # VALIDATE SELLER TYPE
+    # ========================================================
+
     if seller_type not in [
         "farmer",
-        "supplier"
+        "supplier",
     ]:
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid seller type."
+            detail="Invalid seller type.",
         )
 
     # ========================================================
@@ -1494,13 +2013,13 @@ async def complete_order(
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid order amount."
+            detail="Invalid order amount.",
         )
 
     # ========================================================
     # CHECK EXISTING TRANSACTION
     #
-    # This prevents duplicate wallet credits.
+    # Prevent duplicate wallet credits.
     # ========================================================
 
     existing_transaction = (
@@ -1529,7 +2048,7 @@ async def complete_order(
                     "completed",
 
                 "order_status":
-                    "completed"
+                    "completed",
 
             })
             .eq(
@@ -1547,7 +2066,7 @@ async def complete_order(
                     "Seller transaction already "
                     "exists, but order could not "
                     "be marked completed."
-                )
+                ),
             )
 
         return {
@@ -1582,7 +2101,7 @@ async def complete_order(
                 False,
 
             "already_processed":
-                True
+                True,
         }
 
     # ========================================================
@@ -1630,7 +2149,7 @@ async def complete_order(
                     new_balance,
 
                 "updated_at":
-                    datetime.utcnow().isoformat()
+                    datetime.utcnow().isoformat(),
 
             })
             .eq(
@@ -1647,7 +2166,7 @@ async def complete_order(
                 detail=(
                     "Failed to update "
                     "seller wallet."
-                )
+                ),
             )
 
     # ========================================================
@@ -1676,7 +2195,7 @@ async def complete_order(
                 "UGX",
 
             "updated_at":
-                datetime.utcnow().isoformat()
+                datetime.utcnow().isoformat(),
         }
 
         wallet_insert = (
@@ -1695,7 +2214,7 @@ async def complete_order(
                 detail=(
                     "Failed to create "
                     "seller wallet."
-                )
+                ),
             )
 
     # ========================================================
@@ -1745,7 +2264,7 @@ async def complete_order(
             description,
 
         "created_at":
-            datetime.utcnow().isoformat()
+            datetime.utcnow().isoformat(),
     }
 
     transaction_response = (
@@ -1766,7 +2285,7 @@ async def complete_order(
                 "but transaction creation "
                 "failed. Manual reconciliation "
                 "may be required."
-            )
+            ),
         )
 
     # ========================================================
@@ -1782,7 +2301,7 @@ async def complete_order(
                 "completed",
 
             "order_status":
-                "completed"
+                "completed",
 
         })
         .eq(
@@ -1801,11 +2320,11 @@ async def complete_order(
                 "transaction was created, "
                 "but order completion "
                 "update failed."
-            )
+            ),
         )
 
     # ========================================================
-    # RESPONSE
+    # RESPONSE MESSAGE
     # ========================================================
 
     if seller_type == "farmer":
@@ -1821,6 +2340,10 @@ async def complete_order(
             "Order completed and "
             "supplier wallet credited."
         )
+
+    # ========================================================
+    # RESPONSE
+    # ========================================================
 
     return {
 
@@ -1850,5 +2373,5 @@ async def complete_order(
             True,
 
         "already_processed":
-            False
+            False,
     }
