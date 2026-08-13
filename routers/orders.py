@@ -178,6 +178,15 @@ async def create_order(
 #
 # GET /api/marketplace/orders/farmer/{farmer_id}
 #
+# IMPORTANT:
+#
+# This endpoint is for farmers selling their own produce.
+#
+# It returns orders where:
+#
+#     seller_id   = farmer ID
+#     seller_type = farmer
+#
 # ============================================================
 
 @router.get("/orders/farmer/{farmer_id}")
@@ -212,6 +221,22 @@ async def farmer_orders(
 #
 # GET /api/marketplace/orders/supplier/{supplier_id}
 #
+# IMPORTANT:
+#
+# This endpoint is ONLY for supplier farm-supply orders.
+#
+# It will return orders where:
+#
+#     seller_id    = supplier ID
+#     seller_type  = supplier
+#     product_type = supply
+#
+# This prevents supplier dashboards from receiving:
+#
+#     - farmer produce orders
+#     - produce marketplace orders
+#     - orders belonging to another seller type
+#
 # ============================================================
 
 @router.get("/orders/supplier/{supplier_id}")
@@ -231,6 +256,10 @@ async def supplier_orders(
             "seller_type",
             "supplier",
         )
+        .eq(
+            "product_type",
+            "supply",
+        )
         .order(
             "created_at",
             desc=True,
@@ -245,6 +274,24 @@ async def supplier_orders(
 # GENERIC SELLER ORDERS
 #
 # GET /api/marketplace/orders/seller/{seller_id}
+#
+# IMPORTANT:
+#
+# DO NOT REMOVE THIS ENDPOINT.
+#
+# It remains available for the generic seller architecture.
+#
+# This is useful because a farmer can also sell produce.
+#
+# Therefore:
+#
+#     farmer produce
+#     supplier supplies
+#
+# can both use seller_id at the database level.
+#
+# This endpoint intentionally does NOT filter seller_type
+# or product_type.
 #
 # ============================================================
 
@@ -332,6 +379,8 @@ async def get_order_details(
         )
 
     return response.data[0]
+
+
 # ============================================================
 # PAY ORDER
 #
@@ -389,6 +438,7 @@ async def pay_order(
     #
     # If MTN payment was already initiated, do not create
     # another payment request.
+    #
     # ========================================================
 
     if order.get("payment_status") == "pending":
