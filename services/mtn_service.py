@@ -1,279 +1,157 @@
-import requests
-import os
 import base64
-
-from dotenv import load_dotenv
-
-
-load_dotenv()
+import os
+import uuid
+import requests
 
 
 # ============================================================
-# MTN MOMO CONFIGURATION
+# MTN CONFIGURATION
 # ============================================================
 
-BASE_URL = (
-    "https://sandbox.momodeveloper.mtn.com"
+MTN_SUBSCRIPTION_KEY = os.getenv(
+    "MTN_SUBSCRIPTION_KEY"
 )
 
-
-# ============================================================
-# API CREDENTIALS
-# ============================================================
-
-API_USER = os.getenv(
+MTN_API_USER = os.getenv(
     "MTN_API_USER"
 )
 
-API_KEY = os.getenv(
+MTN_API_KEY = os.getenv(
     "MTN_API_KEY"
 )
 
 
 # ============================================================
-# DISBURSEMENT SUBSCRIPTION KEY
+# ENVIRONMENT
 #
-# Used when:
-#
-# Seller withdraws money
-#
-# Marketplace
-#     ↓
-# Farmer/Supplier
+# sandbox = testing
+# mtnuganda = Uganda production
 # ============================================================
 
-DISBURSEMENT_SUBSCRIPTION_KEY = os.getenv(
-    "MTN_SUBSCRIPTION_KEY"
-)
-
-
-# ============================================================
-# COLLECTION SUBSCRIPTION KEY
-#
-# Used when:
-#
-# Buyer pays marketplace
-#
-# Buyer
-#     ↓
-# Marketplace
-# ============================================================
-
-COLLECTION_SUBSCRIPTION_KEY = os.getenv(
-    "MTN_COLLECTION_SUBSCRIPTION_KEY"
-)
-
-
-# ============================================================
-# TARGET ENVIRONMENT
-# ============================================================
-
-TARGET_ENVIRONMENT = os.getenv(
-    "MTN_TARGET_ENVIRONMENT",
+MTN_ENVIRONMENT = os.getenv(
+    "MTN_ENVIRONMENT",
     "sandbox"
 )
 
 
 # ============================================================
-# VALIDATE COMMON CONFIG
+# BASE URL
 # ============================================================
 
-def validate_common_config():
+MTN_BASE_URL = os.getenv(
+    "MTN_BASE_URL",
+    "https://sandbox.momodeveloper.mtn.com"
+)
 
-    if not API_USER:
 
-        raise Exception(
-            "MTN_API_USER missing"
+# ============================================================
+# CALLBACK URL
+# ============================================================
+
+MTN_CALLBACK_URL = os.getenv(
+    "MTN_CALLBACK_URL",
+    "https://agri-market-ai-api.onrender.com/api/marketplace/payments/mtn/callback"
+)
+
+
+# ============================================================
+# VALIDATE CONFIGURATION
+# ============================================================
+
+def validate_mtn_config():
+
+    missing = []
+
+    if not MTN_SUBSCRIPTION_KEY:
+        missing.append(
+            "MTN_SUBSCRIPTION_KEY"
         )
 
-    if not API_KEY:
+    if not MTN_API_USER:
+        missing.append(
+            "MTN_API_USER"
+        )
+
+    if not MTN_API_KEY:
+        missing.append(
+            "MTN_API_KEY"
+        )
+
+    if missing:
 
         raise Exception(
-            "MTN_API_KEY missing"
+            "Missing MTN environment variables: "
+            + ", ".join(missing)
         )
 
 
 # ============================================================
-# VALIDATE DISBURSEMENT CONFIG
+# GET ACCESS TOKEN
 # ============================================================
 
-def validate_disbursement_config():
+def get_access_token():
 
-    validate_common_config()
-
-    if not DISBURSEMENT_SUBSCRIPTION_KEY:
-
-        raise Exception(
-            "MTN_SUBSCRIPTION_KEY missing"
-        )
-
-
-# ============================================================
-# VALIDATE COLLECTION CONFIG
-# ============================================================
-
-def validate_collection_config():
-
-    validate_common_config()
-
-    if not COLLECTION_SUBSCRIPTION_KEY:
-
-        raise Exception(
-            "MTN_COLLECTION_SUBSCRIPTION_KEY missing"
-        )
-
-
-# ============================================================
-# BUILD BASIC AUTH HEADER
-# ============================================================
-
-def _basic_auth_header():
+    validate_mtn_config()
 
     credentials = (
-        f"{API_USER}:{API_KEY}"
+        f"{MTN_API_USER}:{MTN_API_KEY}"
     )
 
     encoded_credentials = (
         base64.b64encode(
             credentials.encode()
-        ).decode()
+        )
+        .decode()
     )
-
-    return (
-        f"Basic {encoded_credentials}"
-    )
-
-
-# ============================================================
-# GET DISBURSEMENT ACCESS TOKEN
-#
-# Seller withdrawals
-# ============================================================
-
-def get_access_token():
-
-    validate_disbursement_config()
 
     url = (
-        f"{BASE_URL}/disbursement/token/"
+        f"{MTN_BASE_URL}"
+        "/collection/token/"
     )
+
+    headers = {
+
+        "Authorization":
+            f"Basic {encoded_credentials}",
+
+        "Ocp-Apim-Subscription-Key":
+            MTN_SUBSCRIPTION_KEY,
+
+    }
 
     response = requests.post(
-
         url,
-
-        headers={
-
-            "Authorization":
-                _basic_auth_header(),
-
-            "Ocp-Apim-Subscription-Key":
-                DISBURSEMENT_SUBSCRIPTION_KEY,
-
-            "Content-Type":
-                "application/json"
-        },
-
+        headers=headers,
         timeout=30
-    )
-
-    print(
-        "DISBURSEMENT TOKEN URL:",
-        url
-    )
-
-    print(
-        "DISBURSEMENT TOKEN STATUS:",
-        response.status_code
-    )
-
-    print(
-        response.text
     )
 
     if response.status_code != 200:
 
         raise Exception(
-            response.text
+            "Failed to get MTN access token: "
+            f"{response.status_code} "
+            f"{response.text}"
         )
 
-    return response.json()[
-        "access_token"
-    ]
+    data = response.json()
 
-
-# ============================================================
-# GET COLLECTION ACCESS TOKEN
-#
-# Buyer payments
-# ============================================================
-
-def get_collection_access_token():
-
-    validate_collection_config()
-
-    url = (
-        f"{BASE_URL}/collection/token/"
+    access_token = (
+        data.get("access_token")
     )
 
-    response = requests.post(
-
-        url,
-
-        headers={
-
-            "Authorization":
-                _basic_auth_header(),
-
-            "Ocp-Apim-Subscription-Key":
-                COLLECTION_SUBSCRIPTION_KEY,
-
-            "Content-Type":
-                "application/json"
-        },
-
-        timeout=30
-    )
-
-    print(
-        "COLLECTION TOKEN URL:",
-        url
-    )
-
-    print(
-        "COLLECTION TOKEN STATUS:",
-        response.status_code
-    )
-
-    print(
-        response.text
-    )
-
-    if response.status_code != 200:
+    if not access_token:
 
         raise Exception(
-            response.text
+            "MTN did not return an access token."
         )
 
-    return response.json()[
-        "access_token"
-    ]
+    return access_token
 
 
 # ============================================================
 # REQUEST PAYMENT
 #
-# Buyer → Marketplace
-#
 # MTN COLLECTIONS
-#
-# This does NOT mean payment is completed.
-#
-# MTN normally returns:
-#
-# 202 Accepted
-#
-# The actual payment must subsequently be checked.
 # ============================================================
 
 def request_payment(
@@ -284,89 +162,95 @@ def request_payment(
 
     external_id: str,
 
-    payer_message: str = (
-        "Agri AI Assist marketplace payment"
-    ),
+    payer_message: str,
 
-    payee_note: str = (
-        "Marketplace order payment"
-    )
+    payee_note: str,
 
 ):
 
-    token = (
-        get_collection_access_token()
+    validate_mtn_config()
+
+    access_token = (
+        get_access_token()
+    )
+
+    reference_id = str(
+        uuid.uuid4()
     )
 
     url = (
-        f"{BASE_URL}/collection/"
-        "v1_0/requesttopay"
+        f"{MTN_BASE_URL}"
+        "/collection/v1_0/requesttopay"
     )
+
+    headers = {
+
+        "Authorization":
+            f"Bearer {access_token}",
+
+        "X-Reference-Id":
+            reference_id,
+
+        "X-Target-Environment":
+            MTN_ENVIRONMENT,
+
+        "Ocp-Apim-Subscription-Key":
+            MTN_SUBSCRIPTION_KEY,
+
+        "Content-Type":
+            "application/json",
+
+        "X-Callback-Url":
+            MTN_CALLBACK_URL,
+
+    }
+
+    body = {
+
+        "amount":
+            str(amount),
+
+        "currency":
+            "UGX",
+
+        "externalId":
+            external_id,
+
+        "payer": {
+
+            "partyIdType":
+                "MSISDN",
+
+            "partyId":
+                phone_number,
+
+        },
+
+        "payerMessage":
+            payer_message,
+
+        "payeeNote":
+            payee_note,
+
+    }
 
     response = requests.post(
 
         url,
 
-        headers={
+        headers=headers,
 
-            "Authorization":
-                f"Bearer {token}",
-
-            "X-Reference-Id":
-                external_id,
-
-            "X-Target-Environment":
-                TARGET_ENVIRONMENT,
-
-            "Ocp-Apim-Subscription-Key":
-                COLLECTION_SUBSCRIPTION_KEY,
-
-            "Content-Type":
-                "application/json"
-        },
-
-        json={
-
-            "amount":
-                str(amount),
-
-            "currency":
-                "UGX",
-
-            "externalId":
-                external_id,
-
-            "payer": {
-
-                "partyIdType":
-                    "MSISDN",
-
-                "partyId":
-                    phone_number
-            },
-
-            "payerMessage":
-                payer_message,
-
-            "payeeNote":
-                payee_note
-        },
+        json=body,
 
         timeout=30
+
     )
 
-    print(
-        "COLLECTION REQUEST URL:",
-        url
-    )
+    # Store the MTN reference ID on the response object
+    # so the calling router can save it.
 
-    print(
-        "COLLECTION REQUEST STATUS:",
-        response.status_code
-    )
-
-    print(
-        response.text
+    response.mtn_reference_id = (
+        reference_id
     )
 
     return response
@@ -374,227 +258,63 @@ def request_payment(
 
 # ============================================================
 # GET PAYMENT STATUS
-#
-# Buyer → Marketplace
-#
-# reference_id must be the same UUID used in:
-#
-# X-Reference-Id
-#
-# when request_payment() was created.
 # ============================================================
 
 def get_payment_status(
-    reference_id: str
-):
-
-    token = (
-        get_collection_access_token()
-    )
-
-    url = (
-        f"{BASE_URL}/collection/"
-        f"v1_0/requesttopay/"
-        f"{reference_id}"
-    )
-
-    response = requests.get(
-
-        url,
-
-        headers={
-
-            "Authorization":
-                f"Bearer {token}",
-
-            "X-Target-Environment":
-                TARGET_ENVIRONMENT,
-
-            "Ocp-Apim-Subscription-Key":
-                COLLECTION_SUBSCRIPTION_KEY,
-
-            "Content-Type":
-                "application/json"
-        },
-
-        timeout=30
-    )
-
-    print(
-        "PAYMENT STATUS URL:",
-        url
-    )
-
-    print(
-        "PAYMENT STATUS CODE:",
-        response.status_code
-    )
-
-    print(
-        response.text
-    )
-
-    if response.status_code != 200:
-
-        raise Exception(
-            response.text
-        )
-
-    return response.json()
-
-
-# ============================================================
-# SEND MONEY TO FARMER / SUPPLIER
-#
-# MTN DISBURSEMENT
-#
-# This remains for seller withdrawals.
-# ============================================================
-
-def transfer_money(
-
-    amount: float,
-
-    phone_number: str,
-
-    external_id: str
-
-):
-
-    token = (
-        get_access_token()
-    )
-
-    url = (
-        f"{BASE_URL}/disbursement/"
-        "v1_0/transfer"
-    )
-
-    response = requests.post(
-
-        url,
-
-        headers={
-
-            "Authorization":
-                f"Bearer {token}",
-
-            "X-Reference-Id":
-                external_id,
-
-            "X-Target-Environment":
-                TARGET_ENVIRONMENT,
-
-            "Ocp-Apim-Subscription-Key":
-                DISBURSEMENT_SUBSCRIPTION_KEY,
-
-            "Content-Type":
-                "application/json"
-        },
-
-        json={
-
-            "amount":
-                str(amount),
-
-            "currency":
-                "UGX",
-
-            "externalId":
-                external_id,
-
-            "payee": {
-
-                "partyIdType":
-                    "MSISDN",
-
-                "partyId":
-                    phone_number
-            }
-        },
-
-        timeout=30
-    )
-
-    print(
-        "TRANSFER URL:",
-        url
-    )
-
-    print(
-        "TRANSFER STATUS:",
-        response.status_code
-    )
-
-    print(
-        response.text
-    )
-
-    return response
-
-
-# ============================================================
-# GET TRANSFER STATUS
-#
-# Seller withdrawal status
-# ============================================================
-
-def get_transfer_status(
 
     reference_id: str
 
 ):
 
-    token = (
+    validate_mtn_config()
+
+    access_token = (
         get_access_token()
     )
 
     url = (
-        f"{BASE_URL}/disbursement/"
-        f"v1_0/transfer/"
-        f"{reference_id}"
+
+        f"{MTN_BASE_URL}"
+
+        "/collection/v1_0/requesttopay"
+
+        f"/{reference_id}"
+
     )
+
+    headers = {
+
+        "Authorization":
+            f"Bearer {access_token}",
+
+        "X-Target-Environment":
+            MTN_ENVIRONMENT,
+
+        "Ocp-Apim-Subscription-Key":
+            MTN_SUBSCRIPTION_KEY,
+
+    }
 
     response = requests.get(
 
         url,
 
-        headers={
-
-            "Authorization":
-                f"Bearer {token}",
-
-            "X-Target-Environment":
-                TARGET_ENVIRONMENT,
-
-            "Ocp-Apim-Subscription-Key":
-                DISBURSEMENT_SUBSCRIPTION_KEY,
-
-            "Content-Type":
-                "application/json"
-        },
+        headers=headers,
 
         timeout=30
-    )
 
-    print(
-        "TRANSFER STATUS URL:",
-        url
-    )
-
-    print(
-        "TRANSFER STATUS CODE:",
-        response.status_code
-    )
-
-    print(
-        response.text
     )
 
     if response.status_code != 200:
 
         raise Exception(
-            response.text
+
+            "Failed to get MTN payment status: "
+
+            f"{response.status_code} "
+
+            f"{response.text}"
+
         )
 
     return response.json()
