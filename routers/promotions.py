@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -7,9 +6,15 @@ from database import supabase
 from services.mtn_service import (
     request_payment,
     get_payment_status,
+    MTN_CURRENCY,
 )
 
-from datetime import datetime, timezone
+from datetime import (
+    datetime,
+    timezone,
+    timedelta,
+)
+
 import uuid
 
 
@@ -17,7 +22,7 @@ router = APIRouter()
 
 
 # ============================================================
-# REQUEST MODEL
+# REQUEST MODELS
 # ============================================================
 
 class PromotionCreate(BaseModel):
@@ -32,10 +37,6 @@ class PromotionCreate(BaseModel):
 
     duration_days: int = Field(gt=0)
 
-
-# ============================================================
-# PAYMENT REQUEST MODEL
-# ============================================================
 
 class PromotionPaymentRequest(BaseModel):
 
@@ -87,7 +88,7 @@ def get_promotion_fee(
 
 
 # ============================================================
-# NORMALIZE PHONE NUMBER
+# NORMALIZE UGANDA PHONE NUMBER
 # ============================================================
 
 def normalize_phone_number(
@@ -98,6 +99,7 @@ def normalize_phone_number(
         phone_number
         .strip()
         .replace(" ", "")
+        .replace("-", "")
         .replace("+", "")
     )
 
@@ -134,6 +136,19 @@ def normalize_phone_number(
 
         )
 
+    if len(phone_number) != 12:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail=(
+                "Invalid Uganda Mobile "
+                "Money number."
+            )
+
+        )
+
     return phone_number
 
 
@@ -141,20 +156,14 @@ def normalize_phone_number(
 # CREATE PROMOTION
 #
 # POST /promotions
-#
-# Promotion starts as PENDING.
-#
-# Payment is required before activation.
 # ============================================================
 
-@router.post("/promotions")
+@router.post(
+    "/promotions"
+)
 async def create_promotion(
     promotion: PromotionCreate
 ):
-
-    # ========================================================
-    # VALIDATE SELLER TYPE
-    # ========================================================
 
     seller_type = (
         promotion.seller_type
@@ -168,8 +177,8 @@ async def create_promotion(
             status_code=400,
 
             detail=(
-                "Only suppliers can "
-                "promote farm-supply products."
+                "Only suppliers can promote "
+                "farm-supply products."
             )
 
         )
@@ -236,7 +245,7 @@ async def create_promotion(
 
 
     # ========================================================
-    # VERIFY PRODUCT BELONGS TO SUPPLIER
+    # VERIFY PRODUCT OWNER
     # ========================================================
 
     if (
@@ -257,7 +266,7 @@ async def create_promotion(
 
 
     # ========================================================
-    # VERIFY SELLER TYPE
+    # VERIFY SUPPLIER PRODUCT
     # ========================================================
 
     if product.get("seller_type") != "supplier":
@@ -274,10 +283,6 @@ async def create_promotion(
         )
 
 
-    # ========================================================
-    # VERIFY PRODUCT TYPE
-    # ========================================================
-
     if product.get("product_type") != "supply":
 
         raise HTTPException(
@@ -291,10 +296,6 @@ async def create_promotion(
 
         )
 
-
-    # ========================================================
-    # VERIFY PRODUCT STATUS
-    # ========================================================
 
     if product.get("status") != "available":
 
@@ -352,8 +353,8 @@ async def create_promotion(
             status_code=400,
 
             detail=(
-                "Promoted price must be "
-                "lower than the original price."
+                "Promoted price must be lower "
+                "than the original price."
             )
 
         )
@@ -363,20 +364,19 @@ async def create_promotion(
     # CALCULATE DISCOUNT
     # ========================================================
 
-    discount_percentage = (
+    discount_percentage = round(
 
         (
-            original_price
-            - promoted_price
+            (
+                original_price
+                - promoted_price
+            )
+            / original_price
         )
-        / original_price
+        * 100,
 
-    ) * 100
-
-
-    discount_percentage = round(
-        discount_percentage,
         2
+
     )
 
 
@@ -384,45 +384,33 @@ async def create_promotion(
     # CHECK EXISTING PROMOTION
     # ========================================================
 
-    try:
+    existing_response = (
 
-        existing_response = (
+        supabase
 
-            supabase
+        .table("product_promotions")
 
-            .table("product_promotions")
+        .select("*")
 
-            .select("*")
+        .eq(
+            "product_id",
+            promotion.product_id
+        )
 
-            .eq(
-                "product_id",
-                promotion.product_id
-            )
+        .in_(
 
-            .in_(
-                "status",
-                [
-                    "pending",
-                    "active"
-                ]
-            )
+            "status",
 
-            .execute()
+            [
+                "pending",
+                "active"
+            ]
 
         )
 
-    except Exception as e:
+        .execute()
 
-        raise HTTPException(
-
-            status_code=500,
-
-            detail=(
-                "Could not check existing "
-                f"promotions: {str(e)}"
-            )
-
-        )
+    )
 
 
     if existing_response.data:
@@ -432,34 +420,21 @@ async def create_promotion(
             status_code=400,
 
             detail=(
-                "This product already has "
-                "a pending or active promotion."
+                "This product already has a "
+                "pending or active promotion."
             )
 
         )
 
 
     # ========================================================
-    # PROMOTION DATES
-    #
-    # IMPORTANT:
-    #
-    # Do NOT start the promotion clock yet.
-    #
-    # Payment has not happened.
-    #
-    # The payment-status endpoint will set
-    # starts_at and expires_at after successful payment.
+    # CREATE PROMOTION
     # ========================================================
 
     now = datetime.now(
         timezone.utc
     )
 
-
-    # ========================================================
-    # CREATE PROMOTION
-    # ========================================================
 
     promotion_data = {
 
@@ -487,13 +462,9 @@ async def create_promotion(
         "duration_days":
             promotion.duration_days,
 
-        # Will be set after successful payment.
         "starts_at":
             now.isoformat(),
 
-        # Temporary value.
-        #
-        # It will be replaced after payment.
         "expires_at":
             now.isoformat(),
 
@@ -501,6 +472,9 @@ async def create_promotion(
             "pending",
 
         "payment_reference":
+            None,
+
+        "mtn_reference_id":
             None,
 
         "payment_method":
@@ -513,14 +487,10 @@ async def create_promotion(
             "pending",
 
         "created_at":
-            now.isoformat()
+            now.isoformat(),
 
     }
 
-
-    # ========================================================
-    # INSERT
-    # ========================================================
 
     try:
 
@@ -528,7 +498,9 @@ async def create_promotion(
 
             supabase
 
-            .table("product_promotions")
+            .table(
+                "product_promotions"
+            )
 
             .insert(
                 promotion_data
@@ -565,10 +537,6 @@ async def create_promotion(
         )
 
 
-    # ========================================================
-    # RESPONSE
-    # ========================================================
-
     return {
 
         "message":
@@ -584,10 +552,10 @@ async def create_promotion(
             promotion_fee,
 
         "currency":
-            "UGX",
+            MTN_CURRENCY,
 
         "payment_status":
-            "pending"
+            "pending",
 
     }
 
@@ -596,16 +564,17 @@ async def create_promotion(
 # PAY FOR PROMOTION
 #
 # POST /promotions/{promotion_id}/payment
-#
-# Uses the EXISTING MTN COLLECTIONS integration.
 # ============================================================
 
 @router.post(
     "/promotions/{promotion_id}/payment"
 )
 async def pay_for_promotion(
+
     promotion_id: str,
+
     payment: PromotionPaymentRequest
+
 ):
 
     # ========================================================
@@ -616,7 +585,9 @@ async def pay_for_promotion(
 
         supabase
 
-        .table("product_promotions")
+        .table(
+            "product_promotions"
+        )
 
         .select("*")
 
@@ -666,12 +637,15 @@ async def pay_for_promotion(
 
 
     # ========================================================
-    # PREVENT CANCELLED / EXPIRED
+    # PREVENT INVALID STATUS
     # ========================================================
 
     if promotion.get("status") in [
+
         "cancelled",
+
         "expired"
+
     ]:
 
         raise HTTPException(
@@ -705,22 +679,29 @@ async def pay_for_promotion(
 
 
     # ========================================================
-    # EXISTING PAYMENT
+    # CHECK FOR EXISTING PAYMENT
     # ========================================================
 
-    existing_reference = (
-
+    existing_payment_reference = (
         promotion.get(
             "payment_reference"
         )
+    )
 
+    existing_mtn_reference = (
+        promotion.get(
+            "mtn_reference_id"
+        )
     )
 
 
     if (
         promotion.get("payment_status")
         == "pending"
-        and existing_reference
+
+        and existing_payment_reference
+
+        and existing_mtn_reference
     ):
 
         return {
@@ -735,24 +716,25 @@ async def pay_for_promotion(
                 promotion_fee,
 
             "currency":
-                "UGX",
+                MTN_CURRENCY,
 
             "payment_status":
                 "pending",
 
             "payment_reference":
-                existing_reference,
+                existing_payment_reference,
 
-            "payment_method":
-                promotion.get(
-                    "payment_method"
+            "next_step":
+                (
+                    "Approve the Mobile Money "
+                    "payment and check payment status."
                 )
 
         }
 
 
     # ========================================================
-    # PHONE NUMBER
+    # NORMALIZE PHONE NUMBER
     # ========================================================
 
     phone_number = normalize_phone_number(
@@ -761,7 +743,7 @@ async def pay_for_promotion(
 
 
     # ========================================================
-    # CREATE PAYMENT REFERENCE
+    # CREATE INTERNAL PAYMENT REFERENCE
     # ========================================================
 
     payment_reference = str(
@@ -771,8 +753,6 @@ async def pay_for_promotion(
 
     # ========================================================
     # REQUEST MTN PAYMENT
-    #
-    # REUSES EXISTING PAYMENT SYSTEM.
     # ========================================================
 
     try:
@@ -783,8 +763,7 @@ async def pay_for_promotion(
 
             phone_number=phone_number,
 
-            external_id=
-                payment_reference,
+            external_id=payment_reference,
 
             payer_message=(
                 "Agri AI Assist "
@@ -792,8 +771,7 @@ async def pay_for_promotion(
             ),
 
             payee_note=(
-                "Farm supply "
-                "promotion payment"
+                "Farm supply promotion payment"
             )
 
         )
@@ -810,8 +788,8 @@ async def pay_for_promotion(
             status_code=502,
 
             detail=(
-                "Unable to initiate "
-                "Mobile Money payment."
+                "Unable to initiate Mobile Money "
+                f"payment: {str(e)}"
             )
 
         )
@@ -821,11 +799,11 @@ async def pay_for_promotion(
     # MTN REQUEST ACCEPTED
     # ========================================================
 
-    if mtn_response.status_code != 202:
+    if not mtn_response.get("accepted"):
 
         print(
             "PROMOTION MTN PAYMENT FAILED:",
-            mtn_response.text
+            mtn_response
         )
 
         raise HTTPException(
@@ -833,8 +811,38 @@ async def pay_for_promotion(
             status_code=502,
 
             detail=(
-                "MTN did not accept "
-                "the promotion payment request."
+                "MTN did not accept the payment request. "
+                f"Status: {mtn_response.get('status_code')}. "
+                f"Response: {mtn_response.get('response_text')}"
+            )
+
+        )
+
+
+    # ========================================================
+    # MTN REFERENCE
+    #
+    # This is the X-Reference-Id generated by mtn_service.py.
+    #
+    # It MUST be used for payment status checks.
+    # ========================================================
+
+    mtn_reference_id = (
+        mtn_response.get(
+            "reference_id"
+        )
+    )
+
+
+    if not mtn_reference_id:
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=(
+                "MTN accepted the payment request "
+                "but no MTN reference was returned."
             )
 
         )
@@ -852,8 +860,11 @@ async def pay_for_promotion(
         "payment_reference":
             payment_reference,
 
+        "mtn_reference_id":
+            mtn_reference_id,
+
         "payment_method":
-            "Mobile Money"
+            "Mobile Money",
 
     }
 
@@ -862,7 +873,9 @@ async def pay_for_promotion(
 
         supabase
 
-        .table("product_promotions")
+        .table(
+            "product_promotions"
+        )
 
         .update(
             payment_update
@@ -885,24 +898,24 @@ async def pay_for_promotion(
             status_code=500,
 
             detail=(
-                "MTN payment request was "
-                "accepted, but the promotion "
-                "could not be updated."
+                "MTN accepted the payment request, "
+                "but payment information could "
+                "not be saved."
             )
 
         )
 
 
     # ========================================================
-    # RESPONSE
+    # SUCCESS RESPONSE
     # ========================================================
 
     return {
 
         "message":
             (
-                "Mobile Money payment "
-                "request sent successfully."
+                "Mobile Money payment request "
+                "sent successfully."
             ),
 
         "promotion_id":
@@ -912,7 +925,7 @@ async def pay_for_promotion(
             promotion_fee,
 
         "currency":
-            "UGX",
+            MTN_CURRENCY,
 
         "payment_status":
             "pending",
@@ -936,21 +949,15 @@ async def pay_for_promotion(
 # CHECK PROMOTION PAYMENT STATUS
 #
 # GET /promotions/{promotion_id}/payment-status
-#
-# Successful payment:
-#
-# payment_status = paid
-# status = active
-#
-# starts_at = payment confirmation time
-# expires_at = starts_at + duration
 # ============================================================
 
 @router.get(
     "/promotions/{promotion_id}/payment-status"
 )
 async def check_promotion_payment_status(
+
     promotion_id: str
+
 ):
 
     # ========================================================
@@ -961,7 +968,9 @@ async def check_promotion_payment_status(
 
         supabase
 
-        .table("product_promotions")
+        .table(
+            "product_promotions"
+        )
 
         .select("*")
 
@@ -998,12 +1007,12 @@ async def check_promotion_payment_status(
         == "paid"
     ):
 
-        # Check whether it has expired.
         expires_at_value = (
             promotion.get(
                 "expires_at"
             )
         )
+
 
         if expires_at_value:
 
@@ -1020,9 +1029,10 @@ async def check_promotion_payment_status(
                 timezone.utc
             )
 
+
             if expires_at <= now:
 
-                expire_response = (
+                update_response = (
 
                     supabase
 
@@ -1046,11 +1056,13 @@ async def check_promotion_payment_status(
 
                 )
 
-                if expire_response.data:
+
+                if update_response.data:
 
                     promotion = (
-                        expire_response.data[0]
+                        update_response.data[0]
                     )
+
 
         return {
 
@@ -1073,35 +1085,32 @@ async def check_promotion_payment_status(
                 ),
 
             "message":
-                (
-                    "Promotion payment "
-                    "already confirmed."
-                )
+                "Promotion payment already confirmed."
 
         }
 
 
     # ========================================================
-    # PAYMENT REFERENCE
+    # GET MTN REFERENCE
     # ========================================================
 
-    payment_reference = (
+    mtn_reference_id = (
 
         promotion.get(
-            "payment_reference"
+            "mtn_reference_id"
         )
 
     )
 
 
-    if not payment_reference:
+    if not mtn_reference_id:
 
         raise HTTPException(
 
             status_code=400,
 
             detail=(
-                "No Mobile Money payment "
+                "No MTN payment request "
                 "has been initiated for "
                 "this promotion."
             )
@@ -1111,14 +1120,12 @@ async def check_promotion_payment_status(
 
     # ========================================================
     # QUERY MTN
-    #
-    # REUSES EXISTING PAYMENT SERVICE.
     # ========================================================
 
     try:
 
         mtn_status = get_payment_status(
-            payment_reference
+            mtn_reference_id
         )
 
     except Exception as e:
@@ -1133,8 +1140,8 @@ async def check_promotion_payment_status(
             status_code=502,
 
             detail=(
-                "Unable to check "
-                "Mobile Money payment status."
+                "Unable to check Mobile Money "
+                f"payment status: {str(e)}"
             )
 
         )
@@ -1167,10 +1174,6 @@ async def check_promotion_payment_status(
         )
 
 
-        # ====================================================
-        # CALCULATE PROMOTION DATES
-        # ====================================================
-
         duration_days = int(
 
             promotion.get(
@@ -1187,8 +1190,7 @@ async def check_promotion_payment_status(
                 status_code=400,
 
                 detail=(
-                    "Invalid promotion "
-                    "duration."
+                    "Invalid promotion duration."
                 )
 
             )
@@ -1199,18 +1201,13 @@ async def check_promotion_payment_status(
         expires_at = (
 
             starts_at
-            + __import__(
-                "datetime"
-            ).timedelta(
+
+            + timedelta(
                 days=duration_days
             )
 
         )
 
-
-        # ====================================================
-        # ACTIVATE PROMOTION
-        # ====================================================
 
         update_response = (
 
@@ -1238,7 +1235,7 @@ async def check_promotion_payment_status(
                     starts_at.isoformat(),
 
                 "expires_at":
-                    expires_at.isoformat()
+                    expires_at.isoformat(),
 
             })
 
@@ -1282,7 +1279,9 @@ async def check_promotion_payment_status(
                 mtn_result,
 
             "payment_reference":
-                payment_reference,
+                promotion.get(
+                    "payment_reference"
+                ),
 
             "starts_at":
                 starts_at.isoformat(),
@@ -1304,8 +1303,11 @@ async def check_promotion_payment_status(
     # ========================================================
 
     if mtn_result in [
+
         "FAILED",
+
         "REJECTED"
+
     ]:
 
         update_response = (
@@ -1331,21 +1333,6 @@ async def check_promotion_payment_status(
             .execute()
 
         )
-
-
-        if not update_response.data:
-
-            raise HTTPException(
-
-                status_code=500,
-
-                detail=(
-                    "Payment failed at MTN, "
-                    "but the promotion could "
-                    "not be updated."
-                )
-
-            )
 
 
         return {
@@ -1392,7 +1379,9 @@ async def check_promotion_payment_status(
             or "PENDING",
 
         "payment_reference":
-            payment_reference,
+            promotion.get(
+                "payment_reference"
+            ),
 
         "message":
             (
@@ -1422,7 +1411,9 @@ async def get_supplier_promotions(
 
             supabase
 
-            .table("product_promotions")
+            .table(
+                "product_promotions"
+            )
 
             .select("*")
 
@@ -1440,15 +1431,12 @@ async def get_supplier_promotions(
 
         )
 
+
         promotions = (
             response.data
             or []
         )
 
-
-        # ====================================================
-        # MARK EXPIRED PROMOTIONS
-        # ====================================================
 
         now = datetime.now(
             timezone.utc
@@ -1458,11 +1446,14 @@ async def get_supplier_promotions(
         for promotion in promotions:
 
             if (
+
                 promotion.get("status")
                 == "active"
+
                 and promotion.get(
                     "expires_at"
                 )
+
             ):
 
                 expires_at = datetime.fromisoformat(
@@ -1479,12 +1470,43 @@ async def get_supplier_promotions(
 
                 if expires_at <= now:
 
-                    promotion["status"] = (
-                        "expired"
+                    update_response = (
+
+                        supabase
+
+                        .table(
+                            "product_promotions"
+                        )
+
+                        .update({
+
+                            "status":
+                                "expired"
+
+                        })
+
+                        .eq(
+                            "id",
+                            promotion["id"]
+                        )
+
+                        .execute()
+
                     )
 
 
+                    if update_response.data:
+
+                        promotion.update(
+                            update_response.data[0]
+                        )
+
+
         return promotions
+
+
+    except HTTPException:
+        raise
 
 
     except Exception as e:
@@ -1502,8 +1524,6 @@ async def get_supplier_promotions(
 # GET ACTIVE PROMOTIONS
 #
 # GET /promotions/active
-#
-# Public marketplace endpoint.
 # ============================================================
 
 @router.get(
@@ -1637,7 +1657,6 @@ async def cancel_promotion(
 
 
     except HTTPException:
-
         raise
 
 
@@ -1656,8 +1675,6 @@ async def cancel_promotion(
 # EXPIRE PROMOTION
 #
 # POST /promotions/{promotion_id}/expire
-#
-# Internal/admin utility for now.
 # ============================================================
 
 @router.post(
@@ -1719,7 +1736,6 @@ async def expire_promotion(
 
 
     except HTTPException:
-
         raise
 
 
@@ -1732,4 +1748,3 @@ async def expire_promotion(
             detail=str(e)
 
         )
-
