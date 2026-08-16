@@ -1,6 +1,7 @@
 import base64
 import os
 import uuid
+
 import requests
 
 
@@ -24,8 +25,8 @@ MTN_API_KEY = os.getenv(
 # ============================================================
 # ENVIRONMENT
 #
-# sandbox = testing
-# mtnuganda = Uganda production
+# sandbox
+# mtnuganda
 # ============================================================
 
 MTN_ENVIRONMENT = os.getenv(
@@ -41,7 +42,7 @@ MTN_ENVIRONMENT = os.getenv(
 MTN_BASE_URL = os.getenv(
     "MTN_BASE_URL",
     "https://sandbox.momodeveloper.mtn.com"
-)
+).rstrip("/")
 
 
 # ============================================================
@@ -50,7 +51,20 @@ MTN_BASE_URL = os.getenv(
 
 MTN_CALLBACK_URL = os.getenv(
     "MTN_CALLBACK_URL",
-    "https://agri-market-ai-api.onrender.com/api/marketplace/payments/mtn/callback"
+    "https://agri-market-ai-api.onrender.com/"
+)
+
+
+# ============================================================
+# CURRENCY
+#
+# Sandbox uses EUR.
+# Production Uganda should use UGX.
+# ============================================================
+
+MTN_CURRENCY = os.getenv(
+    "MTN_CURRENCY",
+    "EUR"
 )
 
 
@@ -99,9 +113,9 @@ def get_access_token():
 
     encoded_credentials = (
         base64.b64encode(
-            credentials.encode()
+            credentials.encode("utf-8")
         )
-        .decode()
+        .decode("utf-8")
     )
 
     url = (
@@ -119,11 +133,20 @@ def get_access_token():
 
     }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        timeout=30
-    )
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            timeout=30
+        )
+
+    except requests.RequestException as e:
+
+        raise Exception(
+            "Unable to connect to MTN "
+            f"token service: {str(e)}"
+        )
 
     if response.status_code != 200:
 
@@ -135,8 +158,8 @@ def get_access_token():
 
     data = response.json()
 
-    access_token = (
-        data.get("access_token")
+    access_token = data.get(
+        "access_token"
     )
 
     if not access_token:
@@ -152,6 +175,16 @@ def get_access_token():
 # REQUEST PAYMENT
 #
 # MTN COLLECTIONS
+#
+# Returns:
+#
+# {
+#     "accepted": True/False,
+#     "status_code": ...,
+#     "reference_id": ...,
+#     "external_id": ...,
+#     "response_text": ...
+# }
 # ============================================================
 
 def request_payment(
@@ -170,9 +203,29 @@ def request_payment(
 
     validate_mtn_config()
 
+    if amount <= 0:
+
+        raise Exception(
+            "Payment amount must be greater than zero."
+        )
+
+    if not phone_number:
+
+        raise Exception(
+            "Mobile Money phone number is required."
+        )
+
     access_token = (
         get_access_token()
     )
+
+    # ========================================================
+    # THIS IS THE MTN TRANSACTION REFERENCE
+    #
+    # It must be a unique UUID.
+    #
+    # Save this value in your database.
+    # ========================================================
 
     reference_id = str(
         uuid.uuid4()
@@ -200,10 +253,20 @@ def request_payment(
         "Content-Type":
             "application/json",
 
-        "X-Callback-Url":
-            MTN_CALLBACK_URL,
-
     }
+
+    # ========================================================
+    # CALLBACK
+    #
+    # Only include this if configured.
+    # ========================================================
+
+    if MTN_CALLBACK_URL:
+
+        headers[
+            "X-Callback-Url"
+        ] = MTN_CALLBACK_URL
+
 
     body = {
 
@@ -211,8 +274,9 @@ def request_payment(
             str(amount),
 
         "currency":
-            "UGX",
+            MTN_CURRENCY,
 
+        # Your application's transaction ID.
         "externalId":
             external_id,
 
@@ -234,30 +298,51 @@ def request_payment(
 
     }
 
-    response = requests.post(
+    try:
 
-        url,
+        response = requests.post(
+            url,
+            headers=headers,
+            json=body,
+            timeout=30
+        )
 
-        headers=headers,
+    except requests.RequestException as e:
 
-        json=body,
+        raise Exception(
+            "Unable to connect to MTN "
+            f"payment service: {str(e)}"
+        )
 
-        timeout=30
+    return {
 
-    )
+        "accepted":
+            response.status_code == 202,
 
-    # Store the MTN reference ID on the response object
-    # so the calling router can save it.
+        "status_code":
+            response.status_code,
 
-    response.mtn_reference_id = (
-        reference_id
-    )
+        # Save this.
+        "reference_id":
+            reference_id,
 
-    return response
+        # Your application's reference.
+        "external_id":
+            external_id,
+
+        "response_text":
+            response.text,
+
+    }
 
 
 # ============================================================
 # GET PAYMENT STATUS
+#
+# IMPORTANT:
+#
+# reference_id must be the MTN X-Reference-Id,
+# NOT the application's external_id.
 # ============================================================
 
 def get_payment_status(
@@ -267,6 +352,12 @@ def get_payment_status(
 ):
 
     validate_mtn_config()
+
+    if not reference_id:
+
+        raise Exception(
+            "MTN payment reference is required."
+        )
 
     access_token = (
         get_access_token()
@@ -295,15 +386,20 @@ def get_payment_status(
 
     }
 
-    response = requests.get(
+    try:
 
-        url,
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=30
+        )
 
-        headers=headers,
+    except requests.RequestException as e:
 
-        timeout=30
-
-    )
+        raise Exception(
+            "Unable to connect to MTN "
+            f"payment status service: {str(e)}"
+        )
 
     if response.status_code != 200:
 
