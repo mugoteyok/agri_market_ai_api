@@ -6,6 +6,7 @@ from routers.forecast import router as forecast_router
 from routers.wallet import router as wallet_router
 from routers.promotions import router as promotions_router
 from routers.recommendations import router as recommendations_router
+from routers.subscriptions import router as subscriptions_router
 
 
 app = FastAPI(
@@ -95,6 +96,24 @@ app.include_router(
 
 
 # ============================================================
+# SUBSCRIPTIONS
+#
+# Basic:
+#   Activated immediately through the free subscription flow.
+#
+# Pro / Premium:
+#   Requires confirmed MTN Mobile Money payment before
+#   the subscription becomes active.
+# ============================================================
+
+app.include_router(
+    subscriptions_router,
+    prefix="/api/marketplace",
+    tags=["Subscriptions"]
+)
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -112,7 +131,8 @@ def home():
             "AI Price Forecast",
             "Farmer Wallet",
             "Product Promotions",
-            "AI Farm Supply Recommendations"
+            "AI Farm Supply Recommendations",
+            "Subscriptions"
         ]
     }
 
@@ -141,7 +161,9 @@ def marketplace_health():
 
             "promotions": "active",
 
-            "recommendations": "active"
+            "recommendations": "active",
+
+            "subscriptions": "active"
 
         }
 
