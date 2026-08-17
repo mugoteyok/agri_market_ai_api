@@ -9,6 +9,11 @@ from services.mtn_service import (
     MTN_CURRENCY,
 )
 
+from services.notification_service import (
+    notify_seller,
+    notify_all_farmers,
+)
+
 from datetime import (
     datetime,
     timezone,
@@ -1209,6 +1214,76 @@ async def check_promotion_payment_status(
         )
 
 
+        # ====================================================
+        # GET PRODUCT INFORMATION
+        #
+        # Used for the notification messages.
+        # ====================================================
+
+        product = None
+
+        try:
+
+            product_response = (
+
+                supabase
+
+                .table("products")
+
+                .select(
+                    "id, product_name, product_type, "
+                    "seller_id, seller_type, price_per_unit"
+                )
+
+                .eq(
+                    "id",
+                    promotion.get("product_id")
+                )
+
+                .limit(1)
+
+                .execute()
+
+            )
+
+            if product_response.data:
+
+                product = (
+                    product_response.data[0]
+                )
+
+        except Exception as e:
+
+            # Product lookup should never prevent
+            # successful promotion activation.
+
+            print(
+                "PROMOTION PRODUCT LOOKUP ERROR:",
+                str(e),
+            )
+
+
+        product_name = (
+
+            product.get("product_name")
+
+            if product
+
+            else "Farm supply product"
+
+        )
+
+
+        # ====================================================
+        # ACTIVATE PROMOTION
+        #
+        # The payment_status = pending condition is important.
+        #
+        # It means only the request that actually changes
+        # the promotion from pending -> paid can send
+        # the activation notifications.
+        # ====================================================
+
         update_response = (
 
             supabase
@@ -1244,12 +1319,104 @@ async def check_promotion_payment_status(
                 promotion_id
             )
 
+            .eq(
+                "payment_status",
+                "pending"
+            )
+
             .execute()
 
         )
 
 
+        # ====================================================
+        # CHECK WHETHER THIS REQUEST ACTUALLY ACTIVATED IT
+        # ====================================================
+
         if not update_response.data:
+
+            # Another request may have already confirmed
+            # and activated this promotion.
+
+            latest_response = (
+
+                supabase
+
+                .table(
+                    "product_promotions"
+                )
+
+                .select("*")
+
+                .eq(
+                    "id",
+                    promotion_id
+                )
+
+                .limit(1)
+
+                .execute()
+
+            )
+
+
+            latest_promotion = (
+
+                latest_response.data[0]
+
+                if latest_response.data
+
+                else promotion
+
+            )
+
+
+            if (
+                latest_promotion.get(
+                    "payment_status"
+                )
+                == "paid"
+            ):
+
+                return {
+
+                    "promotion_id":
+                        promotion_id,
+
+                    "payment_status":
+                        "paid",
+
+                    "promotion_status":
+                        latest_promotion.get(
+                            "status"
+                        ),
+
+                    "mtn_status":
+                        mtn_result,
+
+                    "payment_reference":
+                        latest_promotion.get(
+                            "payment_reference"
+                        ),
+
+                    "starts_at":
+                        latest_promotion.get(
+                            "starts_at"
+                        ),
+
+                    "expires_at":
+                        latest_promotion.get(
+                            "expires_at"
+                        ),
+
+                    "message":
+                        (
+                            "Payment confirmed. "
+                            "Promotion is already active."
+                        )
+
+                }
+
 
             raise HTTPException(
 
@@ -1263,6 +1430,124 @@ async def check_promotion_payment_status(
 
             )
 
+
+        # ====================================================
+        # PROMOTION HAS JUST BEEN ACTIVATED
+        #
+        # SEND NOTIFICATIONS
+        # ====================================================
+
+        seller_id = (
+            promotion.get("seller_id")
+        )
+
+
+        # ====================================================
+        # NOTIFICATION DATA
+        # ====================================================
+
+        promotion_notification_data = {
+
+            "promotion_id":
+                promotion_id,
+
+            "product_id":
+                promotion.get(
+                    "product_id"
+                ),
+
+            "product_name":
+                product_name,
+
+            "promotion_type":
+                promotion.get(
+                    "promotion_type"
+                ),
+
+            "original_price":
+                promotion.get(
+                    "original_price"
+                ),
+
+            "promoted_price":
+                promotion.get(
+                    "promoted_price"
+                ),
+
+            "discount_percentage":
+                promotion.get(
+                    "discount_percentage"
+                ),
+
+            "duration_days":
+                duration_days,
+
+            "starts_at":
+                starts_at.isoformat(),
+
+            "expires_at":
+                expires_at.isoformat(),
+
+            "event":
+                "promotion_activated",
+
+        }
+
+
+        # ====================================================
+        # NOTIFY SUPPLIER
+        # ====================================================
+
+        if seller_id:
+
+            notify_seller(
+
+                seller_id=seller_id,
+
+                notification_type=
+                    "promotion_activated",
+
+                title=
+                    "Promotion Activated",
+
+                message=(
+                    f"Your promotion for "
+                    f"{product_name} is now active."
+                ),
+
+                data=
+                    promotion_notification_data,
+
+            )
+
+
+        # ====================================================
+        # NOTIFY FARMERS
+        # ====================================================
+
+        notify_all_farmers(
+
+            notification_type=
+                "promoted_farm_supply",
+
+            title=
+                "New Promoted Farm Supply",
+
+            message=(
+                f"{product_name} is now "
+                f"available in Farm Supplies "
+                f"with a special promoted price."
+            ),
+
+            data=
+                promotion_notification_data,
+
+        )
+
+
+        # ====================================================
+        # SUCCESS RESPONSE
+        # ====================================================
 
         return {
 
@@ -1506,6 +1791,7 @@ async def get_supplier_promotions(
 
 
     except HTTPException:
+
         raise
 
 
@@ -1657,6 +1943,7 @@ async def cancel_promotion(
 
 
     except HTTPException:
+
         raise
 
 
@@ -1736,6 +2023,7 @@ async def expire_promotion(
 
 
     except HTTPException:
+
         raise
 
 
