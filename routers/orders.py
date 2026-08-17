@@ -11,7 +11,8 @@ from services.mtn_service import (
 )
 
 from services.notification_service import (
-    create_notification,
+    notify_seller,
+    notify_buyer,
 )
 
 from datetime import datetime
@@ -34,244 +35,28 @@ def utc_now():
 
 
 # ============================================================
-# NOTIFICATION HELPERS
-# ============================================================
-
-def notify_order_created(order):
-    """
-    Notify the seller when a new order is created.
-    """
-
-    seller_id = order.get("seller_id")
-
-    if not seller_id:
-        return
-
-    product_type = (
-        str(
-            order.get("product_type")
-            or "produce"
-        )
-        .lower()
-    )
-
-    quantity = order.get("quantity")
-
-    crop = (
-        order.get("crop")
-        or "product"
-    )
-
-    if product_type == "supply":
-
-        title = "New Farm Supply Order"
-
-        message = (
-            f"You received a new order for "
-            f"{quantity} unit(s) of {crop}."
-        )
-
-    else:
-
-        title = "New Produce Order"
-
-        message = (
-            f"You received a new order for "
-            f"{quantity} unit(s) of {crop}."
-        )
-
-    create_notification(
-        user_id=str(seller_id),
-        title=title,
-        message=message,
-        notification_type="order",
-    )
-
-
-def notify_payment_success(order):
-    """
-    Notify both buyer and seller after successful payment.
-    """
-
-    buyer_id = order.get("buyer_id")
-
-    seller_id = order.get("seller_id")
-
-    crop = (
-        order.get("crop")
-        or "your order"
-    )
-
-    # --------------------------------------------------------
-    # BUYER
-    # --------------------------------------------------------
-
-    if buyer_id:
-
-        create_notification(
-            user_id=str(buyer_id),
-            title="Payment Successful",
-            message=(
-                f"Your payment for {crop} "
-                f"was successfully confirmed."
-            ),
-            notification_type="order",
-        )
-
-    # --------------------------------------------------------
-    # SELLER
-    # --------------------------------------------------------
-
-    if seller_id:
-
-        create_notification(
-            user_id=str(seller_id),
-            title="Payment Received",
-            message=(
-                f"Payment for the {crop} "
-                f"order has been successfully confirmed."
-            ),
-            notification_type="order",
-        )
-
-
-def notify_payment_failed(order):
-    """
-    Notify buyer when Mobile Money payment fails.
-    """
-
-    buyer_id = order.get("buyer_id")
-
-    crop = (
-        order.get("crop")
-        or "your order"
-    )
-
-    if not buyer_id:
-        return
-
-    create_notification(
-        user_id=str(buyer_id),
-        title="Payment Failed",
-        message=(
-            f"Your Mobile Money payment for "
-            f"{crop} failed. The order has been cancelled "
-            f"and reserved stock has been released."
-        ),
-        notification_type="order",
-    )
-
-
-def notify_order_accepted(order):
-    """
-    Notify buyer when seller accepts the order.
-    """
-
-    buyer_id = order.get("buyer_id")
-
-    crop = (
-        order.get("crop")
-        or "your order"
-    )
-
-    if not buyer_id:
-        return
-
-    create_notification(
-        user_id=str(buyer_id),
-        title="Order Accepted",
-        message=(
-            f"Your order for {crop} "
-            f"has been accepted by the seller."
-        ),
-        notification_type="order",
-    )
-
-
-def notify_order_completed(order):
-    """
-    Notify buyer when seller completes the order.
-    """
-
-    buyer_id = order.get("buyer_id")
-
-    crop = (
-        order.get("crop")
-        or "your order"
-    )
-
-    if not buyer_id:
-        return
-
-    create_notification(
-        user_id=str(buyer_id),
-        title="Order Completed",
-        message=(
-            f"Your order for {crop} "
-            f"has been completed."
-        ),
-        notification_type="order",
-    )
-
-
-def notify_order_cancelled(
-    order,
-    cancelled_by: str = "seller",
-):
-    """
-    Notify the relevant party when an order is cancelled.
-    """
-
-    buyer_id = order.get("buyer_id")
-
-    seller_id = order.get("seller_id")
-
-    crop = (
-        order.get("crop")
-        or "your order"
-    )
-
-    # --------------------------------------------------------
-    # If seller cancelled
-    # --------------------------------------------------------
-
-    if cancelled_by == "seller":
-
-        if buyer_id:
-
-            create_notification(
-                user_id=str(buyer_id),
-                title="Order Cancelled",
-                message=(
-                    f"Your order for {crop} "
-                    f"has been cancelled by the seller."
-                ),
-                notification_type="order",
-            )
-
-    # --------------------------------------------------------
-    # If buyer cancelled
-    # --------------------------------------------------------
-
-    elif cancelled_by == "buyer":
-
-        if seller_id:
-
-            create_notification(
-                user_id=str(seller_id),
-                title="Order Cancelled",
-                message=(
-                    f"The buyer cancelled the "
-                    f"{crop} order."
-                ),
-                notification_type="order",
-            )
-
-
-# ============================================================
 # CREATE ORDER
 #
 # POST /api/marketplace/orders
+#
+# IMPORTANT:
+#
+# Order creation and stock reservation are now handled
+# atomically inside PostgreSQL.
+#
+# PostgreSQL RPC:
+#
+# create_order_atomic
+#
+# This means:
+#
+#     create order
+#          +
+#     reserve stock
+#
+# happen inside one database transaction.
+#
+# If either operation fails, neither is committed.
 # ============================================================
 
 @router.post("/orders")
@@ -292,6 +77,17 @@ async def create_order(
 
     # ========================================================
     # ATOMIC ORDER CREATION
+    #
+    # PostgreSQL handles:
+    #
+    # - product lookup
+    # - product availability
+    # - stock validation
+    # - stock reservation
+    # - seller information
+    # - price calculation
+    # - order creation
+    #
     # ========================================================
 
     try:
@@ -323,6 +119,10 @@ async def create_order(
 
         error_message = str(e)
 
+        # ====================================================
+        # INSUFFICIENT STOCK
+        # ====================================================
+
         if (
             "Insufficient product quantity"
             in error_message
@@ -335,6 +135,10 @@ async def create_order(
                 ),
             )
 
+        # ====================================================
+        # PRODUCT UNAVAILABLE
+        # ====================================================
+
         if (
             "Product is no longer available"
             in error_message
@@ -346,6 +150,10 @@ async def create_order(
                     "Product is no longer available"
                 ),
             )
+
+        # ====================================================
+        # GENERAL FAILURE
+        # ====================================================
 
         raise HTTPException(
             status_code=500,
@@ -364,29 +172,135 @@ async def create_order(
         )
 
     # ========================================================
-    # GET CREATED ORDER
+    # EXTRACT CREATED ORDER
+    #
+    # create_order_atomic returns:
+    #
+    # {
+    #     "message": "...",
+    #     "order": {...}
+    # }
+    #
     # ========================================================
+
+    rpc_data = rpc_response.data
+
+    if isinstance(rpc_data, list):
+
+        rpc_data = rpc_data[0]
 
     created_order = (
-        rpc_response.data.get(
-            "order",
-            {}
-        )
+        rpc_data.get("order")
+        if isinstance(rpc_data, dict)
+        else None
     )
 
+    if not created_order:
+
+        raise HTTPException(
+            status_code=500,
+            detail="Order was created but could not be read",
+        )
+
     # ========================================================
-    # NOTIFY SELLER
+    # NEW ORDER NOTIFICATION
     #
-    # IMPORTANT:
+    # Notify the seller that a buyer has placed an order.
     #
-    # Notification failure does NOT affect
-    # the successful order.
+    # Notification failure must NOT break order creation.
     # ========================================================
 
-    if created_order:
+    try:
 
-        notify_order_created(
-            created_order
+        buyer_id = created_order.get(
+            "buyer_id"
+        )
+
+        seller_id = created_order.get(
+            "seller_id"
+        )
+
+        product_id = created_order.get(
+            "product_id"
+        )
+
+        product_name = (
+            created_order.get("crop")
+            or "Marketplace product"
+        )
+
+        quantity = created_order.get(
+            "quantity"
+        )
+
+        total_amount = created_order.get(
+            "total_amount"
+        )
+
+        # ----------------------------------------------------
+        # SELLER NOTIFICATION
+        # ----------------------------------------------------
+
+        if seller_id:
+
+            notify_seller(
+
+                seller_id=seller_id,
+
+                notification_type="order",
+
+                title="New order received",
+
+                message=(
+                    f"You received a new order for "
+                    f"{product_name}."
+                ),
+
+                data={
+
+                    "event":
+                        "order_created",
+
+                    "order_id":
+                        created_order.get("id"),
+
+                    "buyer_id":
+                        buyer_id,
+
+                    "seller_id":
+                        seller_id,
+
+                    "product_id":
+                        product_id,
+
+                    "product_name":
+                        product_name,
+
+                    "quantity":
+                        quantity,
+
+                    "total_amount":
+                        total_amount,
+
+                    "order_status":
+                        created_order.get(
+                            "order_status"
+                        ),
+
+                    "payment_status":
+                        created_order.get(
+                            "payment_status"
+                        ),
+
+                },
+
+            )
+
+    except Exception as e:
+
+        print(
+            "ORDER CREATION NOTIFICATION ERROR:",
+            str(e),
         )
 
     # ========================================================
@@ -398,6 +312,18 @@ async def create_order(
 
 # ============================================================
 # FARMER ORDERS
+#
+# GET /api/marketplace/orders/farmer/{farmer_id}
+#
+# IMPORTANT:
+#
+# This endpoint is for farmers selling their own produce.
+#
+# It returns orders where:
+#
+#     seller_id   = farmer ID
+#     seller_type = farmer
+#
 # ============================================================
 
 @router.get("/orders/farmer/{farmer_id}")
@@ -429,6 +355,25 @@ async def farmer_orders(
 
 # ============================================================
 # SUPPLIER ORDERS
+#
+# GET /api/marketplace/orders/supplier/{supplier_id}
+#
+# IMPORTANT:
+#
+# This endpoint is ONLY for supplier farm-supply orders.
+#
+# It will return orders where:
+#
+#     seller_id    = supplier ID
+#     seller_type  = supplier
+#     product_type = supply
+#
+# This prevents supplier dashboards from receiving:
+#
+#     - farmer produce orders
+#     - produce marketplace orders
+#     - orders belonging to another seller type
+#
 # ============================================================
 
 @router.get("/orders/supplier/{supplier_id}")
@@ -464,6 +409,27 @@ async def supplier_orders(
 
 # ============================================================
 # GENERIC SELLER ORDERS
+#
+# GET /api/marketplace/orders/seller/{seller_id}
+#
+# IMPORTANT:
+#
+# DO NOT REMOVE THIS ENDPOINT.
+#
+# It remains available for the generic seller architecture.
+#
+# This is useful because a farmer can also sell produce.
+#
+# Therefore:
+#
+#     farmer produce
+#     supplier supplies
+#
+# can both use seller_id at the database level.
+#
+# This endpoint intentionally does NOT filter seller_type
+# or product_type.
+#
 # ============================================================
 
 @router.get("/orders/seller/{seller_id}")
@@ -491,6 +457,9 @@ async def seller_orders(
 
 # ============================================================
 # BUYER ORDERS
+#
+# GET /api/marketplace/orders/buyer/{buyer_id}
+#
 # ============================================================
 
 @router.get("/orders/buyer/{buyer_id}")
@@ -518,6 +487,9 @@ async def buyer_orders(
 
 # ============================================================
 # GET SINGLE ORDER
+#
+# GET /api/marketplace/orders/{order_id}
+#
 # ============================================================
 
 @router.get("/orders/{order_id}")
@@ -548,6 +520,13 @@ async def get_order_details(
 
 # ============================================================
 # PAY ORDER
+#
+# POST /api/marketplace/orders/{order_id}/payment
+#
+# MTN RequestToPay is asynchronous.
+#
+# This endpoint ONLY initiates the payment.
+#
 # ============================================================
 
 @router.post("/orders/{order_id}/payment")
@@ -593,14 +572,16 @@ async def pay_order(
 
     # ========================================================
     # EXISTING PAYMENT REQUEST
+    #
+    # If MTN payment was already initiated, do not create
+    # another payment request.
+    #
     # ========================================================
 
     if order.get("payment_status") == "pending":
 
         existing_reference = (
-            order.get(
-                "payment_reference"
-            )
+            order.get("payment_reference")
         )
 
         if existing_reference:
@@ -647,9 +628,7 @@ async def pay_order(
     # ========================================================
 
     amount = float(
-        order.get(
-            "total_amount"
-        ) or 0
+        order.get("total_amount") or 0
     )
 
     if amount <= 0:
@@ -680,14 +659,20 @@ async def pay_order(
         )
 
     # ========================================================
-    # NORMALIZE PHONE
+    # NORMALIZE PHONE NUMBER
     # ========================================================
 
     phone_number = (
         phone_number
         .strip()
-        .replace(" ", "")
-        .replace("+", "")
+        .replace(
+            " ",
+            "",
+        )
+        .replace(
+            "+",
+            "",
+        )
     )
 
     if phone_number.startswith("0"):
@@ -698,7 +683,7 @@ async def pay_order(
         )
 
     # ========================================================
-    # PHONE VALIDATION
+    # BASIC PHONE VALIDATION
     # ========================================================
 
     if not phone_number.isdigit():
@@ -751,7 +736,8 @@ async def pay_order(
 
             phone_number=phone_number,
 
-            external_id=payment_reference,
+            external_id=
+                payment_reference,
 
             payer_message=(
                 f"Agri AI Assist "
@@ -874,6 +860,19 @@ async def pay_order(
 
 # ============================================================
 # CHECK PAYMENT STATUS
+#
+# GET /api/marketplace/orders/{order_id}/payment-status
+#
+# SUCCESSFUL -> paid
+#
+# FAILED / REJECTED:
+#
+#     release reserved stock
+#     +
+#     cancel order
+#
+# are handled atomically by PostgreSQL.
+#
 # ============================================================
 
 @router.get(
@@ -930,9 +929,7 @@ async def check_payment_status(
     # ========================================================
 
     payment_reference = (
-        order.get(
-            "payment_reference"
-        )
+        order.get("payment_reference")
     )
 
     if not payment_reference:
@@ -985,6 +982,14 @@ async def check_payment_status(
 
     # ========================================================
     # SUCCESSFUL
+    #
+    # IMPORTANT:
+    #
+    # DO NOT RELEASE STOCK.
+    #
+    # The buyer has paid.
+    # The reserved stock belongs to this order.
+    #
     # ========================================================
 
     if mtn_result == "SUCCESSFUL":
@@ -1024,13 +1029,118 @@ async def check_payment_status(
                 ),
             )
 
-        # ----------------------------------------------------
-        # NOTIFICATIONS
-        # ----------------------------------------------------
+        # ====================================================
+        # PAYMENT SUCCESS NOTIFICATIONS
+        #
+        # Notify both buyer and seller.
+        #
+        # Notification failures must NOT affect payment.
+        # ====================================================
 
-        notify_payment_success(
-            order
-        )
+        try:
+
+            buyer_id = order.get(
+                "buyer_id"
+            )
+
+            seller_id = order.get(
+                "seller_id"
+            )
+
+            product_name = (
+                order.get("crop")
+                or "Marketplace product"
+            )
+
+            order_data = {
+
+                "event":
+                    "payment_successful",
+
+                "order_id":
+                    order_id,
+
+                "product_id":
+                    order.get(
+                        "product_id"
+                    ),
+
+                "product_name":
+                    product_name,
+
+                "quantity":
+                    order.get(
+                        "quantity"
+                    ),
+
+                "total_amount":
+                    order.get(
+                        "total_amount"
+                    ),
+
+                "payment_status":
+                    "paid",
+
+                "payment_method":
+                    "Mobile Money",
+
+                "paid_at":
+                    paid_at,
+
+            }
+
+            # ------------------------------------------------
+            # BUYER
+            # ------------------------------------------------
+
+            if buyer_id:
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="payment",
+
+                    title="Payment successful",
+
+                    message=(
+                        f"Your payment for "
+                        f"{product_name} was successful."
+                    ),
+
+                    data=order_data,
+
+                )
+
+            # ------------------------------------------------
+            # SELLER
+            # ------------------------------------------------
+
+            if seller_id:
+
+                notify_seller(
+
+                    seller_id=seller_id,
+
+                    notification_type="payment",
+
+                    title="Order payment received",
+
+                    message=(
+                        f"Payment has been received "
+                        f"for your {product_name} order."
+                    ),
+
+                    data=order_data,
+
+                )
+
+        except Exception as e:
+
+            print(
+                "PAYMENT NOTIFICATION ERROR:",
+                str(e),
+            )
 
         return {
 
@@ -1052,6 +1162,15 @@ async def check_payment_status(
 
     # ========================================================
     # FAILED
+    #
+    # PostgreSQL handles:
+    #
+    #     release reserved stock
+    #            +
+    #     cancel order
+    #
+    # atomically.
+    #
     # ========================================================
 
     if mtn_result in [
@@ -1103,6 +1222,10 @@ async def check_payment_status(
 
         result = release_response.data
 
+        # ====================================================
+        # SAFELY READ RELEASE RESULT
+        # ====================================================
+
         if isinstance(result, dict):
 
             stock_released = result.get(
@@ -1114,13 +1237,112 @@ async def check_payment_status(
 
             stock_released = False
 
-        # ----------------------------------------------------
-        # NOTIFY BUYER
-        # ----------------------------------------------------
+        # ====================================================
+        # FAILED PAYMENT NOTIFICATIONS
+        #
+        # Notify both buyer and seller that the payment failed
+        # and the order has been cancelled.
+        # ====================================================
 
-        notify_payment_failed(
-            order
-        )
+        try:
+
+            buyer_id = order.get(
+                "buyer_id"
+            )
+
+            seller_id = order.get(
+                "seller_id"
+            )
+
+            product_name = (
+                order.get("crop")
+                or "Marketplace product"
+            )
+
+            notification_data = {
+
+                "event":
+                    "payment_failed",
+
+                "order_id":
+                    order_id,
+
+                "product_id":
+                    order.get(
+                        "product_id"
+                    ),
+
+                "product_name":
+                    product_name,
+
+                "order_status":
+                    "cancelled",
+
+                "payment_status":
+                    "failed",
+
+                "mtn_status":
+                    mtn_result,
+
+                "stock_released":
+                    stock_released,
+
+            }
+
+            # ------------------------------------------------
+            # BUYER
+            # ------------------------------------------------
+
+            if buyer_id:
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="payment",
+
+                    title="Payment failed",
+
+                    message=(
+                        f"Your payment for "
+                        f"{product_name} was not successful. "
+                        f"The order has been cancelled."
+                    ),
+
+                    data=notification_data,
+
+                )
+
+            # ------------------------------------------------
+            # SELLER
+            # ------------------------------------------------
+
+            if seller_id:
+
+                notify_seller(
+
+                    seller_id=seller_id,
+
+                    notification_type="order_status",
+
+                    title="Order cancelled",
+
+                    message=(
+                        f"The order for {product_name} "
+                        f"was cancelled because payment "
+                        f"was not successful."
+                    ),
+
+                    data=notification_data,
+
+                )
+
+        except Exception as e:
+
+            print(
+                "FAILED PAYMENT NOTIFICATION ERROR:",
+                str(e),
+            )
 
         return {
 
@@ -1171,395 +1393,3 @@ async def check_payment_status(
                 "still being processed."
             ),
     }
-
-
-# ============================================================
-# ACCEPT ORDER
-#
-# PUT /api/marketplace/orders/{order_id}/accept
-# ============================================================
-
-@router.put(
-    "/orders/{order_id}/accept"
-)
-async def accept_order(
-    order_id: str,
-):
-
-    # ========================================================
-    # GET ORDER
-    # ========================================================
-
-    order_response = (
-        supabase
-        .table("orders")
-        .select("*")
-        .eq(
-            "id",
-            order_id,
-        )
-        .execute()
-    )
-
-    if not order_response.data:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Order not found",
-        )
-
-    order = order_response.data[0]
-
-    # ========================================================
-    # VALIDATE CURRENT STATUS
-    # ========================================================
-
-    if order.get("order_status") != "placed":
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only placed orders can be accepted."
-            ),
-        )
-
-    # ========================================================
-    # ACCEPT
-    # ========================================================
-
-    update_response = (
-        supabase
-        .table("orders")
-        .update({
-
-            "order_status":
-                "accepted",
-
-            "status":
-                "accepted",
-
-            "accepted_at":
-                utc_now(),
-
-        })
-        .eq(
-            "id",
-            order_id,
-        )
-        .eq(
-            "order_status",
-            "placed",
-        )
-        .execute()
-    )
-
-    if not update_response.data:
-
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Order could not be accepted. "
-                "It may have already changed."
-            ),
-        )
-
-    updated_order = (
-        update_response.data[0]
-    )
-
-    # ========================================================
-    # NOTIFY BUYER
-    # ========================================================
-
-    notify_order_accepted(
-        updated_order
-    )
-
-    return updated_order
-
-
-# ============================================================
-# COMPLETE ORDER
-#
-# PUT /api/marketplace/orders/{order_id}/complete
-# ============================================================
-
-@router.put(
-    "/orders/{order_id}/complete"
-)
-async def complete_order(
-    order_id: str,
-):
-
-    # ========================================================
-    # GET ORDER
-    # ========================================================
-
-    order_response = (
-        supabase
-        .table("orders")
-        .select("*")
-        .eq(
-            "id",
-            order_id,
-        )
-        .execute()
-    )
-
-    if not order_response.data:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Order not found",
-        )
-
-    order = order_response.data[0]
-
-    # ========================================================
-    # VALIDATE STATUS
-    # ========================================================
-
-    if order.get("order_status") != "accepted":
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only accepted orders can be completed."
-            ),
-        )
-
-    # ========================================================
-    # COMPLETE
-    # ========================================================
-
-    update_response = (
-        supabase
-        .table("orders")
-        .update({
-
-            "order_status":
-                "completed",
-
-            "status":
-                "completed",
-
-        })
-        .eq(
-            "id",
-            order_id,
-        )
-        .eq(
-            "order_status",
-            "accepted",
-        )
-        .execute()
-    )
-
-    if not update_response.data:
-
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Order could not be completed. "
-                "It may have already changed."
-            ),
-        )
-
-    updated_order = (
-        update_response.data[0]
-    )
-
-    # ========================================================
-    # NOTIFY BUYER
-    # ========================================================
-
-    notify_order_completed(
-        updated_order
-    )
-
-    return updated_order
-
-
-# ============================================================
-# CANCEL ORDER
-#
-# PUT /api/marketplace/orders/{order_id}/cancel
-# ============================================================
-
-@router.put(
-    "/orders/{order_id}/cancel"
-)
-async def cancel_order(
-    order_id: str,
-):
-
-    # ========================================================
-    # GET ORDER
-    # ========================================================
-
-    order_response = (
-        supabase
-        .table("orders")
-        .select("*")
-        .eq(
-            "id",
-            order_id,
-        )
-        .execute()
-    )
-
-    if not order_response.data:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Order not found",
-        )
-
-    order = order_response.data[0]
-
-    # ========================================================
-    # PREVENT CANCELLING COMPLETED ORDERS
-    # ========================================================
-
-    if order.get("order_status") == "completed":
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Completed orders cannot be cancelled."
-            ),
-        )
-
-    # ========================================================
-    # ALREADY CANCELLED
-    # ========================================================
-
-    if order.get("order_status") == "cancelled":
-
-        return order
-
-    # ========================================================
-    # RELEASE RESERVED STOCK
-    #
-    # This uses your existing safe/idempotent RPC.
-    # ========================================================
-
-    if order.get("stock_reserved") and not order.get(
-        "stock_released"
-    ):
-
-        try:
-
-            release_response = (
-                supabase
-                .rpc(
-                    "release_reserved_stock",
-                    {
-                        "p_order_id":
-                            order_id,
-
-                        "p_payment_status":
-                            "cancelled",
-                    },
-                )
-                .execute()
-            )
-
-        except Exception as e:
-
-            print(
-                "CANCEL ORDER STOCK RELEASE ERROR:",
-                str(e),
-            )
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Order could not be cancelled "
-                    "because reserved stock could "
-                    "not be released."
-                ),
-            )
-
-        if not release_response.data:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Order could not be cancelled."
-                ),
-            )
-
-    else:
-
-        # ====================================================
-        # NO RESERVED STOCK
-        # ====================================================
-
-        update_response = (
-            supabase
-            .table("orders")
-            .update({
-
-                "order_status":
-                    "cancelled",
-
-                "status":
-                    "cancelled",
-
-            })
-            .eq(
-                "id",
-                order_id,
-            )
-            .execute()
-        )
-
-        if not update_response.data:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to cancel order."
-                ),
-            )
-
-    # ========================================================
-    # GET FINAL ORDER
-    # ========================================================
-
-    final_response = (
-        supabase
-        .table("orders")
-        .select("*")
-        .eq(
-            "id",
-            order_id,
-        )
-        .execute()
-    )
-
-    if not final_response.data:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Order was cancelled but "
-                "could not be retrieved."
-            ),
-        )
-
-    final_order = (
-        final_response.data[0]
-    )
-
-    # ========================================================
-    # NOTIFY BUYER
-    # ========================================================
-
-    notify_order_cancelled(
-        final_order,
-        cancelled_by="seller",
-    )
-
-    return final_order
