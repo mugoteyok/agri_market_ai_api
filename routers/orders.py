@@ -1392,3 +1392,536 @@ async def pay_order(
                 "Mobile Money payment."
             ),
     }
+# ============================================================
+# CHECK PAYMENT STATUS
+#
+# GET /api/marketplace/orders/{order_id}/payment-status
+#
+# SUCCESSFUL -> paid
+#
+# FAILED / REJECTED:
+#
+#     release reserved stock
+#     +
+#     cancel order
+#
+# are handled atomically by PostgreSQL.
+# ============================================================
+
+@router.get(
+    "/orders/{order_id}/payment-status"
+)
+async def check_payment_status(
+    order_id: str,
+):
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
+
+    order_response = (
+        supabase
+        .table("orders")
+        .select("*")
+        .eq(
+            "id",
+            order_id,
+        )
+        .execute()
+    )
+
+    if not order_response.data:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found",
+        )
+
+    order = order_response.data[0]
+
+    # ========================================================
+    # ALREADY PAID
+    # ========================================================
+
+    if order.get("payment_status") == "paid":
+
+        return {
+
+            "order_id":
+                order_id,
+
+            "payment_status":
+                "paid",
+
+            "message":
+                "Payment already confirmed.",
+        }
+
+    # ========================================================
+    # GET MTN REFERENCE
+    # ========================================================
+
+    payment_reference = (
+        order.get("payment_reference")
+    )
+
+    if not payment_reference:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No Mobile Money payment "
+                "has been initiated for "
+                "this order."
+            ),
+        )
+
+    # ========================================================
+    # QUERY MTN
+    # ========================================================
+
+    try:
+
+        mtn_status = get_payment_status(
+            payment_reference
+        )
+
+    except Exception as e:
+
+        print(
+            "MTN STATUS ERROR:",
+            str(e),
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unable to check "
+                "Mobile Money payment status."
+            ),
+        )
+
+    # ========================================================
+    # READ MTN STATUS
+    # ========================================================
+
+    mtn_result = (
+        str(
+            mtn_status.get("status")
+            or ""
+        )
+        .upper()
+    )
+
+    # ========================================================
+    # SUCCESSFUL
+    #
+    # IMPORTANT:
+    #
+    # DO NOT RELEASE STOCK.
+    #
+    # The buyer has paid.
+    # The reserved stock belongs to this order.
+    #
+    # ========================================================
+
+    if mtn_result == "SUCCESSFUL":
+
+        paid_at = utc_now()
+
+        update_response = (
+            supabase
+            .table("orders")
+            .update({
+
+                "payment_status":
+                    "paid",
+
+                "payment_method":
+                    "Mobile Money",
+
+                "paid_at":
+                    paid_at,
+
+            })
+            .eq(
+                "id",
+                order_id,
+            )
+            .execute()
+        )
+
+        if not update_response.data:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "MTN payment was successful "
+                    "but the order could not be "
+                    "updated."
+                ),
+            )
+
+        # ====================================================
+        # PAYMENT SUCCESS NOTIFICATIONS
+        #
+        # Notify both buyer and seller.
+        #
+        # Notification failures must NOT affect payment.
+        # ====================================================
+
+        try:
+
+            buyer_id = order.get(
+                "buyer_id"
+            )
+
+            seller_id = order.get(
+                "seller_id"
+            )
+
+            product_name = (
+                order.get("crop")
+                or "Marketplace product"
+            )
+
+            order_data = {
+
+                "event":
+                    "payment_successful",
+
+                "order_id":
+                    order_id,
+
+                "product_id":
+                    order.get(
+                        "product_id"
+                    ),
+
+                "product_name":
+                    product_name,
+
+                "quantity":
+                    order.get(
+                        "quantity"
+                    ),
+
+                "total_amount":
+                    order.get(
+                        "total_amount"
+                    ),
+
+                "payment_status":
+                    "paid",
+
+                "payment_method":
+                    "Mobile Money",
+
+                "paid_at":
+                    paid_at,
+
+            }
+
+            # ------------------------------------------------
+            # BUYER
+            # ------------------------------------------------
+
+            if buyer_id:
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="payment",
+
+                    title="Payment successful",
+
+                    message=(
+                        f"Your payment for "
+                        f"{product_name} was successful."
+                    ),
+
+                    data=order_data,
+
+                )
+
+            # ------------------------------------------------
+            # SELLER
+            # ------------------------------------------------
+
+            if seller_id:
+
+                notify_seller(
+
+                    seller_id=seller_id,
+
+                    notification_type="payment",
+
+                    title="Order payment received",
+
+                    message=(
+                        f"Payment has been received "
+                        f"for your {product_name} order."
+                    ),
+
+                    data=order_data,
+
+                )
+
+        except Exception as e:
+
+            print(
+                "PAYMENT NOTIFICATION ERROR:",
+                str(e),
+            )
+
+        return {
+
+            "order_id":
+                order_id,
+
+            "payment_status":
+                "paid",
+
+            "mtn_status":
+                mtn_result,
+
+            "stock_released":
+                False,
+
+            "message":
+                "Payment confirmed successfully.",
+        }
+
+    # ========================================================
+    # FAILED
+    #
+    # PostgreSQL handles:
+    #
+    #     release reserved stock
+    #            +
+    #     cancel order
+    #
+    # atomically.
+    # ========================================================
+
+    if mtn_result in [
+        "FAILED",
+        "REJECTED",
+    ]:
+
+        try:
+
+            release_response = (
+                supabase
+                .rpc(
+                    "release_reserved_stock",
+                    {
+                        "p_order_id":
+                            order_id,
+
+                        "p_payment_status":
+                            "failed",
+                    },
+                )
+                .execute()
+            )
+
+        except Exception as e:
+
+            print(
+                "FAILED PAYMENT STOCK RELEASE ERROR:",
+                str(e),
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Payment failed, but reserved "
+                    "stock could not be released."
+                ),
+            )
+
+        if not release_response.data:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Payment failed, but the order "
+                    "could not be released."
+                ),
+            )
+
+        result = release_response.data
+
+        # ====================================================
+        # SAFELY READ RELEASE RESULT
+        # ====================================================
+
+        if isinstance(result, dict):
+
+            stock_released = result.get(
+                "released",
+                False,
+            )
+
+        else:
+
+            stock_released = False
+
+        # ====================================================
+        # FAILED PAYMENT NOTIFICATIONS
+        #
+        # Notify both buyer and seller that the payment failed
+        # and the order has been cancelled.
+        # ====================================================
+
+        try:
+
+            buyer_id = order.get(
+                "buyer_id"
+            )
+
+            seller_id = order.get(
+                "seller_id"
+            )
+
+            product_name = (
+                order.get("crop")
+                or "Marketplace product"
+            )
+
+            notification_data = {
+
+                "event":
+                    "payment_failed",
+
+                "order_id":
+                    order_id,
+
+                "product_id":
+                    order.get(
+                        "product_id"
+                    ),
+
+                "product_name":
+                    product_name,
+
+                "order_status":
+                    "cancelled",
+
+                "payment_status":
+                    "failed",
+
+                "mtn_status":
+                    mtn_result,
+
+                "stock_released":
+                    stock_released,
+
+            }
+
+            # ------------------------------------------------
+            # BUYER
+            # ------------------------------------------------
+
+            if buyer_id:
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="payment",
+
+                    title="Payment failed",
+
+                    message=(
+                        f"Your payment for "
+                        f"{product_name} was not successful. "
+                        f"The order has been cancelled."
+                    ),
+
+                    data=notification_data,
+
+                )
+
+            # ------------------------------------------------
+            # SELLER
+            # ------------------------------------------------
+
+            if seller_id:
+
+                notify_seller(
+
+                    seller_id=seller_id,
+
+                    notification_type="order_status",
+
+                    title="Order cancelled",
+
+                    message=(
+                        f"The order for {product_name} "
+                        f"was cancelled because payment "
+                        f"was not successful."
+                    ),
+
+                    data=notification_data,
+
+                )
+
+        except Exception as e:
+
+            print(
+                "FAILED PAYMENT NOTIFICATION ERROR:",
+                str(e),
+            )
+
+        return {
+
+            "order_id":
+                order_id,
+
+            "payment_status":
+                "failed",
+
+            "order_status":
+                "cancelled",
+
+            "mtn_status":
+                mtn_result,
+
+            "stock_released":
+                stock_released,
+
+            "message":
+                (
+                    "Mobile Money payment failed. "
+                    "Reserved stock has been released."
+                ),
+        }
+
+    # ========================================================
+    # STILL PROCESSING
+    # ========================================================
+
+    return {
+
+        "order_id":
+            order_id,
+
+        "payment_status":
+            "pending",
+
+        "mtn_status":
+            mtn_result
+            or "PENDING",
+
+        "stock_released":
+            False,
+
+        "message":
+            (
+                "Mobile Money payment is "
+                "still being processed."
+            ),
+    }
