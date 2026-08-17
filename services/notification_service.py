@@ -8,10 +8,11 @@ def create_notification(
     notification_type: str,
 ):
     """
-    Create a notification for a Supabase Auth user.
+    Creates a notification for a Supabase Auth user.
 
-    The backend uses the Supabase service-role client,
-    so it can create notifications for another user.
+    Notification failures are intentionally ignored so that
+    marketplace operations are not rolled back because of a
+    notification problem.
     """
 
     try:
@@ -31,12 +32,9 @@ def create_notification(
         return response.data
 
     except Exception as e:
-
         print(
             "NOTIFICATION ERROR:",
             str(e),
         )
 
-        # Notification failure should NOT break
-        # the actual marketplace transaction.
         return None
