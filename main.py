@@ -8,6 +8,17 @@ from routers.promotions import router as promotions_router
 from routers.recommendations import router as recommendations_router
 from routers.subscriptions import router as subscriptions_router
 
+# ============================================================
+# MTN MOBILE MONEY CALLBACK
+#
+# Receives asynchronous payment notifications from MTN.
+#
+# The callback uses the Agri AI Assist payment_external_id
+# to identify the order/payment.
+# ============================================================
+
+from routers.mtn_callback import router as mtn_callback_router
+
 
 app = FastAPI(
     title="Agri Market AI API",
@@ -114,6 +125,34 @@ app.include_router(
 
 
 # ============================================================
+# MTN MOBILE MONEY CALLBACK
+#
+# MTN will call this endpoint asynchronously after the
+# customer approves/rejects the Mobile Money request.
+#
+# IMPORTANT:
+#
+# This router is registered under /api rather than
+# /api/marketplace.
+#
+# Therefore, if mtn_callback.py contains:
+#
+#     @router.post("/mtn/callback")
+#
+# the final endpoint becomes:
+#
+#     POST /api/mtn/callback
+#
+# ============================================================
+
+app.include_router(
+    mtn_callback_router,
+    prefix="/api",
+    tags=["MTN Callback"]
+)
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -132,7 +171,8 @@ def home():
             "Farmer Wallet",
             "Product Promotions",
             "AI Farm Supply Recommendations",
-            "Subscriptions"
+            "Subscriptions",
+            "MTN Mobile Money Callback"
         ]
     }
 
@@ -163,7 +203,9 @@ def marketplace_health():
 
             "recommendations": "active",
 
-            "subscriptions": "active"
+            "subscriptions": "active",
+
+            "mtn_callback": "active"
 
         }
 
