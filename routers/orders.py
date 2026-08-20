@@ -31,6 +31,7 @@ def utc_now():
     """
     Return current UTC timestamp in ISO format.
     """
+
     return datetime.utcnow().isoformat()
 
 
@@ -87,7 +88,6 @@ async def create_order(
     # - seller information
     # - price calculation
     # - order creation
-    #
     # ========================================================
 
     try:
@@ -173,14 +173,6 @@ async def create_order(
 
     # ========================================================
     # EXTRACT CREATED ORDER
-    #
-    # create_order_atomic returns:
-    #
-    # {
-    #     "message": "...",
-    #     "order": {...}
-    # }
-    #
     # ========================================================
 
     rpc_data = rpc_response.data
@@ -204,10 +196,6 @@ async def create_order(
 
     # ========================================================
     # NEW ORDER NOTIFICATION
-    #
-    # Notify the seller that a buyer has placed an order.
-    #
-    # Notification failure must NOT break order creation.
     # ========================================================
 
     try:
@@ -314,16 +302,6 @@ async def create_order(
 # FARMER ORDERS
 #
 # GET /api/marketplace/orders/farmer/{farmer_id}
-#
-# IMPORTANT:
-#
-# This endpoint is for farmers selling their own produce.
-#
-# It returns orders where:
-#
-#     seller_id   = farmer ID
-#     seller_type = farmer
-#
 # ============================================================
 
 @router.get("/orders/farmer/{farmer_id}")
@@ -357,23 +335,6 @@ async def farmer_orders(
 # SUPPLIER ORDERS
 #
 # GET /api/marketplace/orders/supplier/{supplier_id}
-#
-# IMPORTANT:
-#
-# This endpoint is ONLY for supplier farm-supply orders.
-#
-# It will return orders where:
-#
-#     seller_id    = supplier ID
-#     seller_type  = supplier
-#     product_type = supply
-#
-# This prevents supplier dashboards from receiving:
-#
-#     - farmer produce orders
-#     - produce marketplace orders
-#     - orders belonging to another seller type
-#
 # ============================================================
 
 @router.get("/orders/supplier/{supplier_id}")
@@ -411,25 +372,6 @@ async def supplier_orders(
 # GENERIC SELLER ORDERS
 #
 # GET /api/marketplace/orders/seller/{seller_id}
-#
-# IMPORTANT:
-#
-# DO NOT REMOVE THIS ENDPOINT.
-#
-# It remains available for the generic seller architecture.
-#
-# This is useful because a farmer can also sell produce.
-#
-# Therefore:
-#
-#     farmer produce
-#     supplier supplies
-#
-# can both use seller_id at the database level.
-#
-# This endpoint intentionally does NOT filter seller_type
-# or product_type.
-#
 # ============================================================
 
 @router.get("/orders/seller/{seller_id}")
@@ -459,7 +401,6 @@ async def seller_orders(
 # BUYER ORDERS
 #
 # GET /api/marketplace/orders/buyer/{buyer_id}
-#
 # ============================================================
 
 @router.get("/orders/buyer/{buyer_id}")
@@ -489,7 +430,6 @@ async def buyer_orders(
 # GET SINGLE ORDER
 #
 # GET /api/marketplace/orders/{order_id}
-#
 # ============================================================
 
 @router.get("/orders/{order_id}")
@@ -522,17 +462,12 @@ async def get_order_details(
 # ACCEPT ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/accept
-#
 # ============================================================
 
 @router.put("/orders/{order_id}/accept")
 async def accept_order(
     order_id: str,
 ):
-
-    # ========================================================
-    # GET ORDER
-    # ========================================================
 
     response = (
         supabase
@@ -605,8 +540,6 @@ async def accept_order(
 
     # ========================================================
     # NOTIFY BUYER
-    #
-    # Notification failure must not break the order update.
     # ========================================================
 
     try:
@@ -670,17 +603,12 @@ async def accept_order(
 # COMPLETE ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/complete
-#
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
     order_id: str,
 ):
-
-    # ========================================================
-    # GET ORDER
-    # ========================================================
 
     response = (
         supabase
@@ -702,10 +630,6 @@ async def complete_order(
 
     order = response.data[0]
 
-    # ========================================================
-    # PREVENT COMPLETING INVALID ORDER STATES
-    # ========================================================
-
     if order.get("order_status") in [
         "completed",
         "cancelled",
@@ -718,10 +642,6 @@ async def complete_order(
                 "in its current state."
             ),
         )
-
-    # ========================================================
-    # UPDATE ORDER
-    # ========================================================
 
     update_response = (
         supabase
@@ -750,10 +670,6 @@ async def complete_order(
         )
 
     updated_order = update_response.data[0]
-
-    # ========================================================
-    # NOTIFY BUYER
-    # ========================================================
 
     try:
 
@@ -816,22 +732,12 @@ async def complete_order(
 # CANCEL ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/cancel
-#
-# IMPORTANT:
-#
-# If stock was reserved, release_reserved_stock()
-# restores the stock and marks the order as cancelled.
-#
 # ============================================================
 
 @router.put("/orders/{order_id}/cancel")
 async def cancel_order(
     order_id: str,
 ):
-
-    # ========================================================
-    # GET ORDER
-    # ========================================================
 
     response = (
         supabase
@@ -877,10 +783,6 @@ async def cancel_order(
 
     # ========================================================
     # RELEASE RESERVED STOCK
-    #
-    # If this order still has reserved stock, use the
-    # PostgreSQL RPC so stock restoration and cancellation
-    # happen safely.
     # ========================================================
 
     if (
@@ -935,7 +837,6 @@ async def cancel_order(
                 ),
             )
 
-        # Fetch the updated order after the RPC
         updated_response = (
             supabase
             .table("orders")
@@ -960,12 +861,6 @@ async def cancel_order(
         updated_order = updated_response.data[0]
 
     else:
-
-        # ====================================================
-        # NO RESERVED STOCK
-        #
-        # Directly cancel the order.
-        # ====================================================
 
         update_response = (
             supabase
@@ -1109,9 +1004,6 @@ async def pay_order(
 
     # ========================================================
     # EXISTING PAYMENT REQUEST
-    #
-    # If MTN payment was already initiated, do not create
-    # another payment request.
     # ========================================================
 
     if order.get("payment_status") == "pending":
@@ -1301,23 +1193,65 @@ async def pay_order(
         )
 
     # ========================================================
-    # MTN REQUEST ACCEPTED
+    # READ MTN RESPONSE
+    #
+    # request_payment() returns a Python dictionary.
     # ========================================================
 
-    if mtn_response.status_code != 202:
+    print("========== MTN PAYMENT RESPONSE ==========")
+    print(mtn_response)
+    print("==========================================")
 
-        print(
-            "MTN PAYMENT FAILED:",
-            mtn_response.text,
-        )
+    if not isinstance(mtn_response, dict):
 
         raise HTTPException(
             status_code=502,
             detail=(
-                "MTN did not accept "
-                "the payment request."
+                "Invalid response received "
+                "from Mobile Money service."
             ),
         )
+
+    # ========================================================
+    # GET STATUS CODE
+    # ========================================================
+
+    mtn_status_code = mtn_response.get(
+        "status_code"
+    )
+
+    # ========================================================
+    # MTN REQUEST NOT ACCEPTED
+    # ========================================================
+
+    if mtn_status_code != 202:
+
+        error_message = (
+            mtn_response.get("message")
+            or mtn_response.get("error")
+            or mtn_response.get("response")
+            or mtn_response.get("detail")
+            or "MTN did not accept the payment request."
+        )
+
+        print(
+            "MTN PAYMENT FAILED:",
+            mtn_response,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=str(error_message),
+        )
+
+    # ========================================================
+    # MTN REQUEST ACCEPTED
+    # ========================================================
+
+    print(
+        "MTN PAYMENT REQUEST ACCEPTED:",
+        mtn_response,
+    )
 
     # ========================================================
     # SAVE PAYMENT REFERENCE
@@ -1392,6 +1326,8 @@ async def pay_order(
                 "Mobile Money payment."
             ),
     }
+
+
 # ============================================================
 # CHECK PAYMENT STATUS
 #
@@ -1515,14 +1451,6 @@ async def check_payment_status(
 
     # ========================================================
     # SUCCESSFUL
-    #
-    # IMPORTANT:
-    #
-    # DO NOT RELEASE STOCK.
-    #
-    # The buyer has paid.
-    # The reserved stock belongs to this order.
-    #
     # ========================================================
 
     if mtn_result == "SUCCESSFUL":
@@ -1564,10 +1492,6 @@ async def check_payment_status(
 
         # ====================================================
         # PAYMENT SUCCESS NOTIFICATIONS
-        #
-        # Notify both buyer and seller.
-        #
-        # Notification failures must NOT affect payment.
         # ====================================================
 
         try:
@@ -1695,14 +1619,6 @@ async def check_payment_status(
 
     # ========================================================
     # FAILED
-    #
-    # PostgreSQL handles:
-    #
-    #     release reserved stock
-    #            +
-    #     cancel order
-    #
-    # atomically.
     # ========================================================
 
     if mtn_result in [
@@ -1771,9 +1687,6 @@ async def check_payment_status(
 
         # ====================================================
         # FAILED PAYMENT NOTIFICATIONS
-        #
-        # Notify both buyer and seller that the payment failed
-        # and the order has been cancelled.
         # ====================================================
 
         try:
