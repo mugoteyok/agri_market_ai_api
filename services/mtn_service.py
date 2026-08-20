@@ -1,6 +1,7 @@
 import base64
 import os
 import uuid
+import json
 
 import requests
 
@@ -13,11 +14,6 @@ import requests
 # COLLECTIONS
 #
 # Used when a customer/farmer/supplier pays Agri AI Assist.
-#
-# Examples:
-# - Supplier pays for a promoted product
-# - Farmer pays for farm supplies
-# - Buyer pays for agricultural produce
 # ------------------------------------------------------------
 
 MTN_COLLECTION_SUBSCRIPTION_KEY = os.getenv(
@@ -29,11 +25,6 @@ MTN_COLLECTION_SUBSCRIPTION_KEY = os.getenv(
 # DISBURSEMENTS
 #
 # Used when Agri AI Assist pays a farmer or supplier.
-#
-# Examples:
-# - Wallet withdrawal
-# - Supplier payout
-# - Farmer payout
 # ------------------------------------------------------------
 
 MTN_DISBURSEMENT_SUBSCRIPTION_KEY = os.getenv(
@@ -41,9 +32,9 @@ MTN_DISBURSEMENT_SUBSCRIPTION_KEY = os.getenv(
 )
 
 
-# ------------------------------------------------------------
+# ============================================================
 # COLLECTION API USER AND API KEY
-# ------------------------------------------------------------
+# ============================================================
 
 MTN_API_USER = os.getenv(
     "MTN_API_USER"
@@ -55,14 +46,7 @@ MTN_API_KEY = os.getenv(
 
 
 # ============================================================
-# OPTIONAL DISBURSEMENT API USER AND API KEY
-#
-# If separate credentials are configured, they will be used.
-#
-# Otherwise the system falls back to:
-#
-# MTN_API_USER
-# MTN_API_KEY
+# DISBURSEMENT API USER AND API KEY
 # ============================================================
 
 MTN_DISBURSEMENT_API_USER = os.getenv(
@@ -91,8 +75,6 @@ MTN_ENVIRONMENT = os.getenv(
 
 # ============================================================
 # COLLECTION BASE URL
-#
-# Used when a customer/farmer/supplier pays the platform.
 # ============================================================
 
 MTN_BASE_URL = os.getenv(
@@ -103,8 +85,6 @@ MTN_BASE_URL = os.getenv(
 
 # ============================================================
 # DISBURSEMENT BASE URL
-#
-# Used when the platform pays a farmer/supplier.
 # ============================================================
 
 MTN_DISBURSEMENT_BASE_URL = os.getenv(
@@ -115,20 +95,22 @@ MTN_DISBURSEMENT_BASE_URL = os.getenv(
 
 # ============================================================
 # CALLBACK URL
+#
+# This should be configured as an environment variable.
+#
+# Example:
+#
+# https://agri-market-ai-api.onrender.com/api/mtn/callback
 # ============================================================
 
 MTN_CALLBACK_URL = os.getenv(
     "MTN_CALLBACK_URL",
-    "https://agri-market-ai-api.onrender.com/"
-)
+    ""
+).strip()
 
 
 # ============================================================
 # CURRENCY
-#
-# Sandbox may use EUR depending on the MTN sandbox product.
-#
-# Production Uganda should normally use UGX.
 # ============================================================
 
 MTN_CURRENCY = os.getenv(
@@ -146,16 +128,19 @@ def validate_collection_config():
     missing = []
 
     if not MTN_COLLECTION_SUBSCRIPTION_KEY:
+
         missing.append(
             "MTN_COLLECTION_SUBSCRIPTION_KEY"
         )
 
     if not MTN_API_USER:
+
         missing.append(
             "MTN_API_USER"
         )
 
     if not MTN_API_KEY:
+
         missing.append(
             "MTN_API_KEY"
         )
@@ -177,16 +162,19 @@ def validate_disbursement_config():
     missing = []
 
     if not MTN_DISBURSEMENT_SUBSCRIPTION_KEY:
+
         missing.append(
             "MTN_DISBURSEMENT_SUBSCRIPTION_KEY"
         )
 
     if not MTN_DISBURSEMENT_API_USER:
+
         missing.append(
             "MTN_DISBURSEMENT_API_USER"
         )
 
     if not MTN_DISBURSEMENT_API_KEY:
+
         missing.append(
             "MTN_DISBURSEMENT_API_KEY"
         )
@@ -201,10 +189,6 @@ def validate_disbursement_config():
 
 # ============================================================
 # GET COLLECTION ACCESS TOKEN
-#
-# Used for:
-#
-# /collection/token/
 # ============================================================
 
 def get_access_token():
@@ -277,10 +261,6 @@ def get_access_token():
 
 # ============================================================
 # GET DISBURSEMENT ACCESS TOKEN
-#
-# Used for:
-#
-# /disbursement/token/
 # ============================================================
 
 def get_disbursement_access_token():
@@ -358,14 +338,6 @@ def get_disbursement_access_token():
 # REQUEST PAYMENT
 #
 # MTN COLLECTIONS
-#
-# Customer/Farmer/Supplier -> Agri AI Assist
-#
-# Used for:
-#
-# - Product promotion payments
-# - Farm supply purchases
-# - Produce purchases
 # ============================================================
 
 def request_payment(
@@ -402,9 +374,13 @@ def request_payment(
             "External transaction ID is required."
         )
 
-    access_token = (
-        get_access_token()
-    )
+    access_token = get_access_token()
+
+    # --------------------------------------------------------
+    # THIS IS THE MTN TRANSACTION REFERENCE.
+    #
+    # It must later be used when checking payment status.
+    # --------------------------------------------------------
 
     reference_id = str(
         uuid.uuid4()
@@ -433,6 +409,10 @@ def request_payment(
             "application/json",
 
     }
+
+    # --------------------------------------------------------
+    # ONLY SEND CALLBACK IF CONFIGURED
+    # --------------------------------------------------------
 
     if MTN_CALLBACK_URL:
 
@@ -469,6 +449,14 @@ def request_payment(
 
     }
 
+    print("========== MTN REQUEST ==========")
+    print("URL:", url)
+    print("REFERENCE ID:", reference_id)
+    print("EXTERNAL ID:", external_id)
+    print("CALLBACK URL:", MTN_CALLBACK_URL or "NOT SET")
+    print("BODY:", body)
+    print("=================================")
+
     try:
 
         response = requests.post(
@@ -485,6 +473,20 @@ def request_payment(
             f"payment service: {str(e)}"
         )
 
+    # --------------------------------------------------------
+    # TRY TO PARSE MTN RESPONSE
+    # --------------------------------------------------------
+
+    response_data = None
+
+    try:
+
+        response_data = response.json()
+
+    except Exception:
+
+        response_data = None
+
     return {
 
         "accepted":
@@ -493,11 +495,17 @@ def request_payment(
         "status_code":
             response.status_code,
 
+        # IMPORTANT:
+        # Save this ID for get_payment_status().
         "reference_id":
             reference_id,
 
+        # This is your own transaction/order ID.
         "external_id":
             external_id,
+
+        "response":
+            response_data,
 
         "response_text":
             response.text,
@@ -578,12 +586,6 @@ def get_payment_status(
 # TRANSFER MONEY
 #
 # MTN DISBURSEMENTS
-#
-# Agri AI Assist -> Farmer/Supplier
-#
-# This function is used by wallet.py:
-#
-# from services.mtn_service import transfer_money
 # ============================================================
 
 def transfer_money(
@@ -699,13 +701,28 @@ def transfer_money(
             f"transfer service: {str(e)}"
         )
 
-    return response
+    return {
+
+        "accepted":
+            response.status_code == 202,
+
+        "status_code":
+            response.status_code,
+
+        "reference_id":
+            reference_id,
+
+        "external_id":
+            external_id,
+
+        "response_text":
+            response.text,
+
+    }
 
 
 # ============================================================
 # GET TRANSFER STATUS
-#
-# MTN DISBURSEMENTS
 # ============================================================
 
 def get_transfer_status(
