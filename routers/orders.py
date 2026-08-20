@@ -1304,6 +1304,16 @@ async def pay_order(
 
     # ========================================================
     # SAVE PAYMENT REFERENCE
+    #
+    # IMPORTANT:
+    #
+    # payment_reference:
+    #     MTN X-Reference-Id
+    #
+    # payment_external_id:
+    #     Agri AI Assist externalId sent to MTN
+    #
+    # Both are stored because they serve different purposes.
     # ========================================================
 
     payment_update = {
@@ -1314,9 +1324,28 @@ async def pay_order(
         "payment_method":
             "Mobile Money",
 
-        # Save MTN X-Reference-Id
+        # ----------------------------------------------------
+        # MTN X-Reference-Id
+        #
+        # Used for:
+        #
+        # GET /v1_0/requesttopay/{referenceId}
+        #
+        # through get_payment_status().
+        # ----------------------------------------------------
+
         "payment_reference":
             mtn_reference_id,
+
+        # ----------------------------------------------------
+        # Agri AI Assist externalId
+        #
+        # Used by the MTN callback/webhook to identify
+        # the payment and therefore the order.
+        # ----------------------------------------------------
+
+        "payment_external_id":
+            payment_reference,
 
     }
 
@@ -1368,9 +1397,13 @@ async def pay_order(
         "payment_method":
             "Mobile Money",
 
-        # Return MTN X-Reference-Id
+        # MTN X-Reference-Id
         "payment_reference":
             mtn_reference_id,
+
+        # Agri AI Assist externalId
+        "payment_external_id":
+            payment_reference,
 
         "next_step":
             (
