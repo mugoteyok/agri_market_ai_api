@@ -9,9 +9,41 @@ import requests
 # MTN CONFIGURATION
 # ============================================================
 
-MTN_SUBSCRIPTION_KEY = os.getenv(
-    "MTN_SUBSCRIPTION_KEY"
+# ------------------------------------------------------------
+# COLLECTIONS
+#
+# Used when a customer/farmer/supplier pays Agri AI Assist.
+#
+# Examples:
+# - Supplier pays for a promoted product
+# - Farmer pays for farm supplies
+# - Buyer pays for agricultural produce
+# ------------------------------------------------------------
+
+MTN_COLLECTION_SUBSCRIPTION_KEY = os.getenv(
+    "MTN_COLLECTION_SUBSCRIPTION_KEY"
 )
+
+
+# ------------------------------------------------------------
+# DISBURSEMENTS
+#
+# Used when Agri AI Assist pays a farmer or supplier.
+#
+# Examples:
+# - Wallet withdrawal
+# - Supplier payout
+# - Farmer payout
+# ------------------------------------------------------------
+
+MTN_DISBURSEMENT_SUBSCRIPTION_KEY = os.getenv(
+    "MTN_DISBURSEMENT_SUBSCRIPTION_KEY"
+)
+
+
+# ------------------------------------------------------------
+# COLLECTION API USER AND API KEY
+# ------------------------------------------------------------
 
 MTN_API_USER = os.getenv(
     "MTN_API_USER"
@@ -19,6 +51,28 @@ MTN_API_USER = os.getenv(
 
 MTN_API_KEY = os.getenv(
     "MTN_API_KEY"
+)
+
+
+# ============================================================
+# OPTIONAL DISBURSEMENT API USER AND API KEY
+#
+# If separate credentials are configured, they will be used.
+#
+# Otherwise the system falls back to:
+#
+# MTN_API_USER
+# MTN_API_KEY
+# ============================================================
+
+MTN_DISBURSEMENT_API_USER = os.getenv(
+    "MTN_DISBURSEMENT_API_USER",
+    MTN_API_USER
+)
+
+MTN_DISBURSEMENT_API_KEY = os.getenv(
+    "MTN_DISBURSEMENT_API_KEY",
+    MTN_API_KEY
 )
 
 
@@ -38,7 +92,7 @@ MTN_ENVIRONMENT = os.getenv(
 # ============================================================
 # COLLECTION BASE URL
 #
-# Used when a farmer/customer pays the platform.
+# Used when a customer/farmer/supplier pays the platform.
 # ============================================================
 
 MTN_BASE_URL = os.getenv(
@@ -51,9 +105,6 @@ MTN_BASE_URL = os.getenv(
 # DISBURSEMENT BASE URL
 #
 # Used when the platform pays a farmer/supplier.
-#
-# If you use the same MTN host for your environment, this can
-# be the same as MTN_BASE_URL.
 # ============================================================
 
 MTN_DISBURSEMENT_BASE_URL = os.getenv(
@@ -76,6 +127,7 @@ MTN_CALLBACK_URL = os.getenv(
 # CURRENCY
 #
 # Sandbox may use EUR depending on the MTN sandbox product.
+#
 # Production Uganda should normally use UGX.
 # ============================================================
 
@@ -86,16 +138,16 @@ MTN_CURRENCY = os.getenv(
 
 
 # ============================================================
-# VALIDATE COMMON CONFIGURATION
+# VALIDATE COLLECTIONS CONFIGURATION
 # ============================================================
 
-def validate_mtn_config():
+def validate_collection_config():
 
     missing = []
 
-    if not MTN_SUBSCRIPTION_KEY:
+    if not MTN_COLLECTION_SUBSCRIPTION_KEY:
         missing.append(
-            "MTN_SUBSCRIPTION_KEY"
+            "MTN_COLLECTION_SUBSCRIPTION_KEY"
         )
 
     if not MTN_API_USER:
@@ -111,20 +163,53 @@ def validate_mtn_config():
     if missing:
 
         raise Exception(
-            "Missing MTN environment variables: "
+            "Missing MTN Collections environment variables: "
             + ", ".join(missing)
         )
 
 
 # ============================================================
-# GET ACCESS TOKEN
+# VALIDATE DISBURSEMENTS CONFIGURATION
+# ============================================================
+
+def validate_disbursement_config():
+
+    missing = []
+
+    if not MTN_DISBURSEMENT_SUBSCRIPTION_KEY:
+        missing.append(
+            "MTN_DISBURSEMENT_SUBSCRIPTION_KEY"
+        )
+
+    if not MTN_DISBURSEMENT_API_USER:
+        missing.append(
+            "MTN_DISBURSEMENT_API_USER"
+        )
+
+    if not MTN_DISBURSEMENT_API_KEY:
+        missing.append(
+            "MTN_DISBURSEMENT_API_KEY"
+        )
+
+    if missing:
+
+        raise Exception(
+            "Missing MTN Disbursement environment variables: "
+            + ", ".join(missing)
+        )
+
+
+# ============================================================
+# GET COLLECTION ACCESS TOKEN
 #
-# Collection token.
+# Used for:
+#
+# /collection/token/
 # ============================================================
 
 def get_access_token():
 
-    validate_mtn_config()
+    validate_collection_config()
 
     credentials = (
         f"{MTN_API_USER}:{MTN_API_KEY}"
@@ -148,7 +233,7 @@ def get_access_token():
             f"Basic {encoded_credentials}",
 
         "Ocp-Apim-Subscription-Key":
-            MTN_SUBSCRIPTION_KEY,
+            MTN_COLLECTION_SUBSCRIPTION_KEY,
 
     }
 
@@ -164,13 +249,13 @@ def get_access_token():
 
         raise Exception(
             "Unable to connect to MTN "
-            f"token service: {str(e)}"
+            f"Collections token service: {str(e)}"
         )
 
     if response.status_code != 200:
 
         raise Exception(
-            "Failed to get MTN access token: "
+            "Failed to get MTN Collections access token: "
             f"{response.status_code} "
             f"{response.text}"
         )
@@ -184,7 +269,7 @@ def get_access_token():
     if not access_token:
 
         raise Exception(
-            "MTN did not return an access token."
+            "MTN Collections did not return an access token."
         )
 
     return access_token
@@ -193,42 +278,18 @@ def get_access_token():
 # ============================================================
 # GET DISBURSEMENT ACCESS TOKEN
 #
-# IMPORTANT:
+# Used for:
 #
-# MTN Collection and Disbursement may use different API
-# products/credentials.
-#
-# If your MTN setup provides a separate disbursement user/key,
-# configure:
-#
-# MTN_DISBURSEMENT_API_USER
-# MTN_DISBURSEMENT_API_KEY
-#
-# Otherwise this falls back to the existing credentials.
+# /disbursement/token/
 # ============================================================
 
 def get_disbursement_access_token():
 
-    validate_mtn_config()
-
-    api_user = os.getenv(
-        "MTN_DISBURSEMENT_API_USER",
-        MTN_API_USER
-    )
-
-    api_key = os.getenv(
-        "MTN_DISBURSEMENT_API_KEY",
-        MTN_API_KEY
-    )
-
-    if not api_user or not api_key:
-
-        raise Exception(
-            "Missing MTN disbursement credentials."
-        )
+    validate_disbursement_config()
 
     credentials = (
-        f"{api_user}:{api_key}"
+        f"{MTN_DISBURSEMENT_API_USER}:"
+        f"{MTN_DISBURSEMENT_API_KEY}"
     )
 
     encoded_credentials = (
@@ -249,7 +310,7 @@ def get_disbursement_access_token():
             f"Basic {encoded_credentials}",
 
         "Ocp-Apim-Subscription-Key":
-            MTN_SUBSCRIPTION_KEY,
+            MTN_DISBURSEMENT_SUBSCRIPTION_KEY,
 
     }
 
@@ -265,13 +326,13 @@ def get_disbursement_access_token():
 
         raise Exception(
             "Unable to connect to MTN "
-            f"disbursement token service: {str(e)}"
+            f"Disbursement token service: {str(e)}"
         )
 
     if response.status_code != 200:
 
         raise Exception(
-            "Failed to get MTN disbursement "
+            "Failed to get MTN Disbursement "
             "access token: "
             f"{response.status_code} "
             f"{response.text}"
@@ -286,7 +347,7 @@ def get_disbursement_access_token():
     if not access_token:
 
         raise Exception(
-            "MTN disbursement service did not "
+            "MTN Disbursement service did not "
             "return an access token."
         )
 
@@ -298,7 +359,13 @@ def get_disbursement_access_token():
 #
 # MTN COLLECTIONS
 #
-# Farmer/customer -> platform
+# Customer/Farmer/Supplier -> Agri AI Assist
+#
+# Used for:
+#
+# - Product promotion payments
+# - Farm supply purchases
+# - Produce purchases
 # ============================================================
 
 def request_payment(
@@ -315,7 +382,7 @@ def request_payment(
 
 ):
 
-    validate_mtn_config()
+    validate_collection_config()
 
     if amount <= 0:
 
@@ -327,6 +394,12 @@ def request_payment(
 
         raise Exception(
             "Mobile Money phone number is required."
+        )
+
+    if not external_id:
+
+        raise Exception(
+            "External transaction ID is required."
         )
 
     access_token = (
@@ -354,7 +427,7 @@ def request_payment(
             MTN_ENVIRONMENT,
 
         "Ocp-Apim-Subscription-Key":
-            MTN_SUBSCRIPTION_KEY,
+            MTN_COLLECTION_SUBSCRIPTION_KEY,
 
         "Content-Type":
             "application/json",
@@ -444,7 +517,7 @@ def get_payment_status(
 
 ):
 
-    validate_mtn_config()
+    validate_collection_config()
 
     if not reference_id:
 
@@ -457,13 +530,9 @@ def get_payment_status(
     )
 
     url = (
-
         f"{MTN_BASE_URL}"
-
         "/collection/v1_0/requesttopay"
-
         f"/{reference_id}"
-
     )
 
     headers = {
@@ -475,7 +544,7 @@ def get_payment_status(
             MTN_ENVIRONMENT,
 
         "Ocp-Apim-Subscription-Key":
-            MTN_SUBSCRIPTION_KEY,
+            MTN_COLLECTION_SUBSCRIPTION_KEY,
 
     }
 
@@ -497,13 +566,9 @@ def get_payment_status(
     if response.status_code != 200:
 
         raise Exception(
-
             "Failed to get MTN payment status: "
-
             f"{response.status_code} "
-
             f"{response.text}"
-
         )
 
     return response.json()
@@ -514,12 +579,11 @@ def get_payment_status(
 #
 # MTN DISBURSEMENTS
 #
-# Platform -> Farmer/Supplier
+# Agri AI Assist -> Farmer/Supplier
 #
-# This function exists specifically because wallet.py imports:
+# This function is used by wallet.py:
 #
 # from services.mtn_service import transfer_money
-#
 # ============================================================
 
 def transfer_money(
@@ -532,7 +596,7 @@ def transfer_money(
 
 ):
 
-    validate_mtn_config()
+    validate_disbursement_config()
 
     if amount <= 0:
 
@@ -556,17 +620,9 @@ def transfer_money(
         get_disbursement_access_token()
     )
 
-    # ========================================================
-    # MTN DISBURSEMENT REFERENCE
-    # ========================================================
-
     reference_id = str(
         uuid.uuid4()
     )
-
-    # ========================================================
-    # DISBURSEMENT REQUEST URL
-    # ========================================================
 
     url = (
         f"{MTN_DISBURSEMENT_BASE_URL}"
@@ -585,7 +641,7 @@ def transfer_money(
             MTN_ENVIRONMENT,
 
         "Ocp-Apim-Subscription-Key":
-            MTN_SUBSCRIPTION_KEY,
+            MTN_DISBURSEMENT_SUBSCRIPTION_KEY,
 
         "Content-Type":
             "application/json",
@@ -620,34 +676,27 @@ def transfer_money(
         },
 
         "payerMessage":
-            "Agri Market wallet withdrawal",
+            "Agri AI Assist wallet withdrawal",
 
         "payeeNote":
-            "Agri Market wallet withdrawal",
+            "Agri AI Assist wallet withdrawal",
 
     }
 
     try:
 
         response = requests.post(
-
             url,
-
             headers=headers,
-
             json=body,
-
             timeout=30
-
         )
 
     except requests.RequestException as e:
 
         raise Exception(
-
             "Unable to connect to MTN "
             f"transfer service: {str(e)}"
-
         )
 
     return response
@@ -665,7 +714,7 @@ def get_transfer_status(
 
 ):
 
-    validate_mtn_config()
+    validate_disbursement_config()
 
     if not reference_id:
 
@@ -678,13 +727,9 @@ def get_transfer_status(
     )
 
     url = (
-
         f"{MTN_DISBURSEMENT_BASE_URL}"
-
         "/disbursement/v1_0/transfer"
-
         f"/{reference_id}"
-
     )
 
     headers = {
@@ -696,41 +741,31 @@ def get_transfer_status(
             MTN_ENVIRONMENT,
 
         "Ocp-Apim-Subscription-Key":
-            MTN_SUBSCRIPTION_KEY,
+            MTN_DISBURSEMENT_SUBSCRIPTION_KEY,
 
     }
 
     try:
 
         response = requests.get(
-
             url,
-
             headers=headers,
-
             timeout=30
-
         )
 
     except requests.RequestException as e:
 
         raise Exception(
-
             "Unable to connect to MTN "
             f"transfer status service: {str(e)}"
-
         )
 
     if response.status_code != 200:
 
         raise Exception(
-
             "Failed to get MTN transfer status: "
-
             f"{response.status_code} "
-
             f"{response.text}"
-
         )
 
     return response.json()
