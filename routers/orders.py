@@ -1145,7 +1145,14 @@ async def pay_order(
         )
 
     # ========================================================
-    # CREATE MTN REFERENCE
+    # CREATE EXTERNAL PAYMENT ID
+    #
+    # This is Agri AI Assist's internal transaction ID.
+    #
+    # It is sent to MTN as externalId.
+    #
+    # This is NOT the MTN payment reference used for
+    # payment status checks.
     # ========================================================
 
     payment_reference = str(
@@ -1249,6 +1256,7 @@ async def pay_order(
             or mtn_response.get("error")
             or mtn_response.get("response")
             or mtn_response.get("detail")
+            or mtn_response.get("response_text")
             or "MTN did not accept the payment request."
         )
 
@@ -1272,6 +1280,29 @@ async def pay_order(
     )
 
     # ========================================================
+    # GET MTN REFERENCE ID
+    #
+    # This is the X-Reference-Id sent to MTN.
+    #
+    # It must be stored and later used for payment-status
+    # checks.
+    # ========================================================
+
+    mtn_reference_id = mtn_response.get(
+        "reference_id"
+    )
+
+    if not mtn_reference_id:
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "MTN accepted the payment request "
+                "but did not return a payment reference."
+            ),
+        )
+
+    # ========================================================
     # SAVE PAYMENT REFERENCE
     # ========================================================
 
@@ -1283,8 +1314,10 @@ async def pay_order(
         "payment_method":
             "Mobile Money",
 
+        # Save MTN X-Reference-Id
         "payment_reference":
-            payment_reference,
+            mtn_reference_id,
+
     }
 
     payment_update_response = (
@@ -1335,8 +1368,9 @@ async def pay_order(
         "payment_method":
             "Mobile Money",
 
+        # Return MTN X-Reference-Id
         "payment_reference":
-            payment_reference,
+            mtn_reference_id,
 
         "next_step":
             (
@@ -1413,6 +1447,8 @@ async def check_payment_status(
 
     # ========================================================
     # GET MTN REFERENCE
+    #
+    # This is the stored MTN X-Reference-Id.
     # ========================================================
 
     payment_reference = (
