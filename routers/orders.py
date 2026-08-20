@@ -600,6 +600,346 @@ async def accept_order(
 
 
 # ============================================================
+# UPDATE ORDER STATUS
+#
+# PUT /api/marketplace/orders/{order_id}/status?status=processing
+#
+# Used by supplier/farmer dashboards to move an order through
+# its processing lifecycle.
+#
+# IMPORTANT:
+#
+# A supplier can only start processing an order after payment
+# has been confirmed.
+#
+# Supported statuses:
+#
+#     placed
+#     accepted
+#     processing
+#     completed
+#     cancelled
+#
+# IMPORTANT:
+#
+# We intentionally only update:
+#
+#     order_status
+#     status
+#
+# here.
+#
+# This avoids depending on processing_at/completed_at columns
+# that may not currently exist in the orders table.
+# ============================================================
+
+@router.put("/orders/{order_id}/status")
+async def update_order_status(
+    order_id: str,
+    status: str,
+):
+
+    # ========================================================
+    # NORMALIZE STATUS
+    # ========================================================
+
+    new_status = (
+        status
+        .strip()
+        .lower()
+    )
+
+    allowed_statuses = [
+        "placed",
+        "accepted",
+        "processing",
+        "completed",
+        "cancelled",
+    ]
+
+    if new_status not in allowed_statuses:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid order status '{status}'. "
+                f"Allowed statuses are: "
+                f"{', '.join(allowed_statuses)}"
+            ),
+        )
+
+    # ========================================================
+    # GET ORDER
+    # ========================================================
+
+    response = (
+        supabase
+        .table("orders")
+        .select("*")
+        .eq(
+            "id",
+            order_id,
+        )
+        .execute()
+    )
+
+    if not response.data:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found",
+        )
+
+    order = response.data[0]
+
+    current_status = (
+        order.get("order_status")
+        or order.get("status")
+        or "placed"
+    )
+
+    payment_status = (
+        order.get("payment_status")
+        or "pending"
+    )
+
+    # ========================================================
+    # PREVENT CHANGING COMPLETED ORDERS
+    # ========================================================
+
+    if current_status == "completed":
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A completed order cannot "
+                "be changed."
+            ),
+        )
+
+    # ========================================================
+    # PREVENT CHANGING CANCELLED ORDERS
+    # ========================================================
+
+    if current_status == "cancelled":
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A cancelled order cannot "
+                "be changed."
+            ),
+        )
+
+    # ========================================================
+    # PROCESSING REQUIRES PAYMENT
+    #
+    # This prevents the supplier from processing an unpaid
+    # order.
+    # ========================================================
+
+    if new_status == "processing":
+
+        if payment_status != "paid":
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Order cannot be moved to "
+                    "processing because payment "
+                    "has not been confirmed."
+                ),
+            )
+
+    # ========================================================
+    # COMPLETED REQUIRES PAYMENT
+    # ========================================================
+
+    if new_status == "completed":
+
+        if payment_status != "paid":
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A completed order must "
+                    "have confirmed payment."
+                ),
+            )
+
+    # ========================================================
+    # BUILD UPDATE
+    #
+    # IMPORTANT:
+    #
+    # Only use columns that already exist in the current
+    # orders table.
+    # ========================================================
+
+    update_data = {
+
+        "order_status":
+            new_status,
+
+        "status":
+            new_status,
+
+    }
+
+    # ========================================================
+    # UPDATE DATABASE
+    # ========================================================
+
+    update_response = (
+        supabase
+        .table("orders")
+        .update(update_data)
+        .eq(
+            "id",
+            order_id,
+        )
+        .execute()
+    )
+
+    if not update_response.data:
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update order",
+        )
+
+    updated_order = (
+        update_response.data[0]
+    )
+
+    # ========================================================
+    # NOTIFY BUYER
+    # ========================================================
+
+    try:
+
+        buyer_id = order.get(
+            "buyer_id"
+        )
+
+        product_name = (
+            order.get("crop")
+            or "your product"
+        )
+
+        if buyer_id:
+
+            # ------------------------------------------------
+            # PROCESSING
+            # ------------------------------------------------
+
+            if new_status == "processing":
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="order_status",
+
+                    title="Order processing",
+
+                    message=(
+                        f"Your order for "
+                        f"{product_name} "
+                        f"is now being processed."
+                    ),
+
+                    data={
+
+                        "event":
+                            "order_processing",
+
+                        "order_id":
+                            order_id,
+
+                        "product_id":
+                            order.get(
+                                "product_id"
+                            ),
+
+                        "order_status":
+                            new_status,
+
+                        "payment_status":
+                            payment_status,
+
+                        "seller_id":
+                            order.get(
+                                "seller_id"
+                            ),
+
+                    },
+
+                )
+
+            # ------------------------------------------------
+            # COMPLETED
+            # ------------------------------------------------
+
+            elif new_status == "completed":
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="order_status",
+
+                    title="Order completed",
+
+                    message=(
+                        f"Your order for "
+                        f"{product_name} "
+                        f"has been completed."
+                    ),
+
+                    data={
+
+                        "event":
+                            "order_completed",
+
+                        "order_id":
+                            order_id,
+
+                        "product_id":
+                            order.get(
+                                "product_id"
+                            ),
+
+                        "order_status":
+                            new_status,
+
+                        "payment_status":
+                            payment_status,
+
+                        "seller_id":
+                            order.get(
+                                "seller_id"
+                            ),
+
+                    },
+
+                )
+
+    except Exception as e:
+
+        print(
+            "ORDER STATUS NOTIFICATION ERROR:",
+            str(e),
+        )
+
+    # ========================================================
+    # RETURN UPDATED ORDER
+    # ========================================================
+
+    return updated_order
+
+
+# ============================================================
 # COMPLETE ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/complete
