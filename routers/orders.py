@@ -1220,6 +1220,24 @@ async def pay_order(
         "status_code"
     )
 
+    # Normalize status code in case MTN service returns
+    # "202" instead of 202.
+    try:
+
+        mtn_status_code = int(
+            mtn_status_code
+        )
+
+    except (TypeError, ValueError):
+
+        mtn_status_code = None
+
+    print(
+        "MTN STATUS CODE:",
+        mtn_status_code,
+        type(mtn_status_code),
+    )
+
     # ========================================================
     # MTN REQUEST NOT ACCEPTED
     # ========================================================
