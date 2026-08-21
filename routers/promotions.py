@@ -221,6 +221,11 @@ async def create_promotion(
 
     except Exception as e:
 
+        print(
+            "PROMOTION PRODUCT LOOKUP ERROR:",
+            repr(e)
+        )
+
         raise HTTPException(
 
             status_code=500,
@@ -375,30 +380,51 @@ async def create_promotion(
     # CHECK EXISTING PROMOTION
     # ========================================================
 
-    existing_response = (
+    try:
 
-        supabase
+        existing_response = (
 
-        .table("product_promotions")
+            supabase
 
-        .select("*")
+            .table("product_promotions")
 
-        .eq(
-            "product_id",
-            promotion.product_id
+            .select("*")
+
+            .eq(
+                "product_id",
+                promotion.product_id
+            )
+
+            .in_(
+                "status",
+                [
+                    "pending",
+                    "active"
+                ]
+            )
+
+            .execute()
+
         )
 
-        .in_(
-            "status",
-            [
-                "pending",
-                "active"
-            ]
+    except Exception as e:
+
+        print(
+            "PROMOTION EXISTING CHECK ERROR:",
+            repr(e)
         )
 
-        .execute()
+        raise HTTPException(
 
-    )
+            status_code=500,
+
+            detail=(
+                "Could not check existing "
+                "promotion: "
+                f"{str(e)}"
+            )
+
+        )
 
     if existing_response.data:
 
@@ -452,8 +478,6 @@ async def create_promotion(
         "duration_days":
             promotion.duration_days,
 
-        # Promotion timing is assigned only
-        # after successful MTN payment.
         "starts_at":
             None,
 
@@ -483,7 +507,18 @@ async def create_promotion(
 
     }
 
+    # ========================================================
+    # INSERT PROMOTION
+    #
+    # DEBUG LOGGING ADDED HERE
+    # ========================================================
+
     try:
+
+        print(
+            "PROMOTION INSERT DATA:",
+            promotion_data
+        )
 
         response = (
 
@@ -502,6 +537,11 @@ async def create_promotion(
         )
 
     except Exception as e:
+
+        print(
+            "PROMOTION INSERT ERROR:",
+            repr(e)
+        )
 
         raise HTTPException(
 
@@ -760,7 +800,7 @@ async def pay_for_promotion(
 
         print(
             "PROMOTION MTN PAYMENT ERROR:",
-            str(e)
+            repr(e)
         )
 
         raise HTTPException(
@@ -840,26 +880,48 @@ async def pay_for_promotion(
 
     }
 
-    payment_update_response = (
+    try:
 
-        supabase
+        payment_update_response = (
 
-        .table(
-            "product_promotions"
+            supabase
+
+            .table(
+                "product_promotions"
+            )
+
+            .update(
+                payment_update
+            )
+
+            .eq(
+                "id",
+                promotion_id
+            )
+
+            .execute()
+
         )
 
-        .update(
-            payment_update
+    except Exception as e:
+
+        print(
+            "PROMOTION PAYMENT UPDATE ERROR:",
+            repr(e)
         )
 
-        .eq(
-            "id",
-            promotion_id
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=(
+                "MTN accepted the payment request, "
+                "but payment information could "
+                "not be saved: "
+                f"{str(e)}"
+            )
+
         )
-
-        .execute()
-
-    )
 
     if not payment_update_response.data:
 
@@ -1026,13 +1088,6 @@ async def check_promotion_payment_status(
                         update_response.data[0]
                     )
 
-        # ====================================================
-        # ALREADY PAID RESPONSE
-        #
-        # Return BOTH "status" and "promotion_status"
-        # so Flutter can reliably read either field.
-        # ====================================================
-
         return {
 
             "promotion_id":
@@ -1103,7 +1158,7 @@ async def check_promotion_payment_status(
 
         print(
             "PROMOTION MTN STATUS ERROR:",
-            str(e)
+            repr(e)
         )
 
         raise HTTPException(
@@ -1214,7 +1269,7 @@ async def check_promotion_payment_status(
 
             print(
                 "PROMOTION PRODUCT LOOKUP ERROR:",
-                str(e),
+                repr(e),
             )
 
         product_name = (
@@ -1319,13 +1374,6 @@ async def check_promotion_payment_status(
                 )
                 == "paid"
             ):
-
-                # ============================================
-                # ALREADY ACTIVATED RESPONSE
-                #
-                # Return BOTH "status" and
-                # "promotion_status".
-                # ============================================
 
                 return {
 
@@ -1491,9 +1539,6 @@ async def check_promotion_payment_status(
 
         # ====================================================
         # SUCCESS RESPONSE
-        #
-        # Return BOTH "status" and
-        # "promotion_status".
         # ====================================================
 
         return {
@@ -1544,36 +1589,38 @@ async def check_promotion_payment_status(
 
     ]:
 
-        update_response = (
+        try:
 
-            supabase
+            update_response = (
 
-            .table(
-                "product_promotions"
+                supabase
+
+                .table(
+                    "product_promotions"
+                )
+
+                .update({
+
+                    "payment_status":
+                        "failed"
+
+                })
+
+                .eq(
+                    "id",
+                    promotion_id
+                )
+
+                .execute()
+
             )
 
-            .update({
+        except Exception as e:
 
-                "payment_status":
-                    "failed"
-
-            })
-
-            .eq(
-                "id",
-                promotion_id
+            print(
+                "PROMOTION FAILED PAYMENT UPDATE ERROR:",
+                repr(e)
             )
-
-            .execute()
-
-        )
-
-        # ====================================================
-        # FAILED RESPONSE
-        #
-        # Return BOTH "status" and
-        # "promotion_status".
-        # ====================================================
 
         return {
 
@@ -1603,13 +1650,6 @@ async def check_promotion_payment_status(
 
     # ========================================================
     # STILL PROCESSING
-    # ========================================================
-
-    # ========================================================
-    # PENDING RESPONSE
-    #
-    # Return BOTH "status" and
-    # "promotion_status".
     # ========================================================
 
     return {
@@ -1760,6 +1800,11 @@ async def get_supplier_promotions(
 
     except Exception as e:
 
+        print(
+            "GET SUPPLIER PROMOTIONS ERROR:",
+            repr(e)
+        )
+
         raise HTTPException(
 
             status_code=500,
@@ -1828,6 +1873,11 @@ async def get_active_promotions():
         return response.data or []
 
     except Exception as e:
+
+        print(
+            "GET ACTIVE PROMOTIONS ERROR:",
+            repr(e)
+        )
 
         raise HTTPException(
 
@@ -1905,6 +1955,11 @@ async def cancel_promotion(
 
     except Exception as e:
 
+        print(
+            "CANCEL PROMOTION ERROR:",
+            repr(e)
+        )
+
         raise HTTPException(
 
             status_code=500,
@@ -1980,6 +2035,11 @@ async def expire_promotion(
         raise
 
     except Exception as e:
+
+        print(
+            "EXPIRE PROMOTION ERROR:",
+            repr(e)
+        )
 
         raise HTTPException(
 
