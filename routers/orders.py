@@ -49,8 +49,6 @@ def settle_order(order_id: str):
         +
         seller transaction
         +
-        platform commission
-        +
         order completion
 
     The RPC is idempotent, so calling it more than once
@@ -832,8 +830,7 @@ async def update_order_status(
     #   3. identifies seller
     #   4. credits seller wallet
     #   5. creates seller transaction
-    #   6. credits platform commission
-    #   7. marks order completed
+    #   6. marks order completed
     #
     # It is also idempotent.
     # ========================================================
@@ -1107,13 +1104,6 @@ async def update_order_status(
     #
     # Only send this when the order has been completed
     # through the settlement RPC.
-    #
-    # IMPORTANT:
-    #
-    # If the RPC reports already_processed=true, the seller
-    # wallet is NOT credited again. The notification can still
-    # report the original seller earnings once the RPC returns
-    # seller_amount from the existing seller transaction.
     # ========================================================
 
     if new_status == "completed":
@@ -1315,8 +1305,6 @@ async def complete_order(
     # +
     # seller transaction
     # +
-    # platform commission
-    # +
     # order completion
     #
     # The RPC is idempotent.
@@ -1444,15 +1432,6 @@ async def complete_order(
     #
     # This ensures the seller notification matches the seller
     # and amount actually processed by the settlement RPC.
-    #
-    # If this is a second call:
-    #
-    #     wallet_credited = false
-    #     already_processed = true
-    #
-    # but seller_amount should still contain the original
-    # credited amount once the RPC is updated to recover it
-    # from the existing seller transaction.
     # ========================================================
 
     try:
@@ -1592,16 +1571,6 @@ async def complete_order(
             )
             or order.get(
                 "total_amount"
-            ),
-
-        "seller_amount":
-            settlement_result.get(
-                "seller_amount"
-            ),
-
-        "commission_amount":
-            settlement_result.get(
-                "commission_amount"
             ),
 
         "wallet_credited":
