@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, HTTPException
 
 from database import supabase
@@ -127,9 +126,9 @@ def settle_order(order_id: str):
 #
 # This means:
 #
-# create order
-# +
-# reserve stock
+#     create order
+#          +
+#     reserve stock
 #
 # happen inside one database transaction.
 #
@@ -267,9 +266,7 @@ async def create_order(
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Order was created but could not be read"
-            ),
+            detail="Order was created but could not be read",
         )
 
     # ========================================================
@@ -821,26 +818,24 @@ async def update_order_status(
 
     # ========================================================
     # COMPLETE ORDER THROUGH SETTLEMENT RPC
+    #
+    # IMPORTANT:
+    #
+    # Do NOT directly update orders here.
+    #
+    # settle_completed_order() atomically:
+    #
+    #   1. verifies payment
+    #   2. verifies order state
+    #   3. identifies seller
+    #   4. credits seller wallet
+    #   5. creates seller transaction
+    #   6. marks order completed
+    #
+    # It is also idempotent.
     # ========================================================
 
     if new_status == "completed":
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # Do NOT directly update orders here.
-        #
-        # settle_completed_order() atomically:
-        #
-        #   1. verifies payment
-        #   2. verifies order state
-        #   3. identifies seller
-        #   4. credits seller wallet
-        #   5. creates seller transaction
-        #   6. marks order completed
-        #
-        # It is also idempotent.
-        # ----------------------------------------------------
 
         settlement_result = settle_order(
             order_id
@@ -1073,41 +1068,57 @@ async def update_order_status(
                         "settlement_status":
                             "completed",
 
+                        "wallet_credited":
+                            settlement_result.get(
+                                "wallet_credited",
+                                False,
+                            )
+                            if "settlement_result"
+                            in locals()
+                            else False,
+
                     },
 
                 )
 
-        # ----------------------------------------------------
-        # SELLER WALLET CREDIT NOTIFICATION
-        # ----------------------------------------------------
+    except Exception as e:
 
-        if new_status == "completed":
+        print(
+            "ORDER STATUS NOTIFICATION ERROR:",
+            str(e),
+        )
 
-            seller_id = (
-                order.get("seller_id")
-                or updated_order.get("seller_id")
+    # ========================================================
+    # SELLER SETTLEMENT NOTIFICATION
+    #
+    # Only send this when the order has been completed
+    # through the settlement RPC.
+    # ========================================================
+
+    if new_status == "completed":
+
+        try:
+
+            seller_id = order.get(
+                "seller_id"
             )
 
             if seller_id:
 
-                raw_amount = (
-                    updated_order.get("total_amount")
-                    or order.get("total_amount")
-                    or 0
+                settlement_amount = (
+                    settlement_result.get(
+                        "amount"
+                    )
                 )
 
-                try:
+                if settlement_amount is None:
 
-                    display_amount = float(
-                        raw_amount
+                    settlement_amount = (
+                        order.get(
+                            "total_amount"
+                        )
+                        or 0
                     )
-
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-
-                    display_amount = 0
 
                 notify_seller(
 
@@ -1119,7 +1130,7 @@ async def update_order_status(
 
                     message=(
                         f"Your earnings of "
-                        f"UGX {display_amount:,.0f} "
+                        f"UGX {float(settlement_amount):,.0f} "
                         f"have been credited to your wallet."
                     ),
 
@@ -1132,34 +1143,41 @@ async def update_order_status(
                             order_id,
 
                         "amount":
-                            updated_order.get(
-                                "total_amount"
-                            ),
+                            settlement_amount,
 
                         "seller_id":
                             seller_id,
 
                         "seller_type":
-                            updated_order.get(
+                            order.get(
                                 "seller_type"
                             ),
 
                         "order_status":
                             "completed",
 
-                        "settlement_status":
-                            "completed",
+                        "wallet_credited":
+                            settlement_result.get(
+                                "wallet_credited",
+                                False,
+                            ),
+
+                        "already_processed":
+                            settlement_result.get(
+                                "already_processed",
+                                False,
+                            ),
 
                     },
 
                 )
 
-    except Exception as e:
+        except Exception as e:
 
-        print(
-            "ORDER STATUS NOTIFICATION ERROR:",
-            str(e),
-        )
+            print(
+                "SELLER SETTLEMENT NOTIFICATION ERROR:",
+                str(e),
+            )
 
     # ========================================================
     # RETURN UPDATED ORDER
@@ -1179,7 +1197,7 @@ async def update_order_status(
 #
 # placed -> accepted -> processing -> ready -> completed
 #
-# Completion is handled through the settlement RPC.
+# Completion MUST go through the settlement RPC.
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
@@ -1228,39 +1246,15 @@ async def complete_order(
     # ========================================================
     # ALREADY COMPLETED
     #
-    # The settlement RPC is idempotent, but this endpoint
-    # can safely return the existing completed order.
+    # Because the settlement RPC is idempotent, we can safely
+    # call it again if necessary. However, we report that the
+    # order was already completed.
     # ========================================================
 
-    if order.get("order_status") == "completed":
-
-        return {
-
-            "message":
-                "Order has already been completed.",
-
-            "order_id":
-                order_id,
-
-            "order_status":
-                "completed",
-
-            "seller_id":
-                order.get("seller_id"),
-
-            "seller_type":
-                order.get("seller_type"),
-
-            "amount":
-                order.get("total_amount"),
-
-            "wallet_credited":
-                True,
-
-            "already_processed":
-                True,
-
-        }
+    already_completed = (
+        order.get("order_status")
+        == "completed"
+    )
 
     # ========================================================
     # PAYMENT MUST BE CONFIRMED
@@ -1279,13 +1273,13 @@ async def complete_order(
     # ========================================================
     # SETTLE ORDER
     #
-    # PostgreSQL atomically:
+    # PostgreSQL atomically handles:
     #
-    # - verifies payment
-    # - identifies seller
-    # - credits seller wallet
-    # - creates seller transaction
-    # - marks order completed
+    # seller wallet credit
+    # +
+    # seller transaction
+    # +
+    # order completion
     #
     # The RPC is idempotent.
     # ========================================================
@@ -1295,7 +1289,7 @@ async def complete_order(
     )
 
     # ========================================================
-    # RELOAD COMPLETED ORDER
+    # RELOAD ORDER AFTER SETTLEMENT
     # ========================================================
 
     updated_order_response = (
@@ -1324,7 +1318,7 @@ async def complete_order(
     )
 
     # ========================================================
-    # NOTIFICATIONS
+    # NOTIFY BUYER
     # ========================================================
 
     try:
@@ -1332,20 +1326,6 @@ async def complete_order(
         buyer_id = order.get(
             "buyer_id"
         )
-
-        seller_id = (
-            updated_order.get("seller_id")
-            or settlement_result.get("seller_id")
-        )
-
-        product_name = (
-            order.get("crop")
-            or "your product"
-        )
-
-        # ----------------------------------------------------
-        # BUYER
-        # ----------------------------------------------------
 
         if buyer_id:
 
@@ -1359,7 +1339,7 @@ async def complete_order(
 
                 message=(
                     f"Your order for "
-                    f"{product_name} "
+                    f"{order.get('crop') or 'your product'} "
                     f"has been completed."
                 ),
 
@@ -1369,7 +1349,7 @@ async def complete_order(
                         "order_completed",
 
                     "order_id":
-                        order_id,
+                        order["id"],
 
                     "product_id":
                         order.get(
@@ -1383,90 +1363,9 @@ async def complete_order(
                         "paid",
 
                     "seller_id":
-                        seller_id,
-
-                    "settlement_status":
-                        "completed",
-
-                },
-
-            )
-
-        # ----------------------------------------------------
-        # SELLER
-        # ----------------------------------------------------
-
-        if seller_id:
-
-            raw_amount = (
-                settlement_result.get(
-                    "amount"
-                )
-                or updated_order.get(
-                    "total_amount"
-                )
-                or order.get(
-                    "total_amount"
-                )
-                or 0
-            )
-
-            try:
-
-                display_amount = float(
-                    raw_amount
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
-
-                display_amount = 0
-
-            notify_seller(
-
-                seller_id=seller_id,
-
-                notification_type="payment",
-
-                title="Order earnings credited",
-
-                message=(
-                    f"Your earnings of "
-                    f"UGX {display_amount:,.0f} "
-                    f"have been credited to your wallet."
-                ),
-
-                data={
-
-                    "event":
-                        "seller_wallet_credited",
-
-                    "order_id":
-                        order_id,
-
-                    "amount":
-                        settlement_result.get(
-                            "amount"
-                        )
-                        or updated_order.get(
-                            "total_amount"
+                        order.get(
+                            "seller_id"
                         ),
-
-                    "seller_id":
-                        seller_id,
-
-                    "seller_type":
-                        settlement_result.get(
-                            "seller_type"
-                        )
-                        or updated_order.get(
-                            "seller_type"
-                        ),
-
-                    "order_status":
-                        "completed",
 
                     "settlement_status":
                         "completed",
@@ -1495,6 +1394,92 @@ async def complete_order(
         )
 
     # ========================================================
+    # NOTIFY SELLER
+    # ========================================================
+
+    try:
+
+        seller_id = order.get(
+            "seller_id"
+        )
+
+        if seller_id:
+
+            settlement_amount = (
+                settlement_result.get(
+                    "amount"
+                )
+            )
+
+            if settlement_amount is None:
+
+                settlement_amount = (
+                    order.get(
+                        "total_amount"
+                    )
+                    or 0
+                )
+
+            notify_seller(
+
+                seller_id=seller_id,
+
+                notification_type="payment",
+
+                title="Order earnings credited",
+
+                message=(
+                    f"Your earnings of "
+                    f"UGX {float(settlement_amount):,.0f} "
+                    f"have been credited to your wallet."
+                ),
+
+                data={
+
+                    "event":
+                        "seller_wallet_credited",
+
+                    "order_id":
+                        order_id,
+
+                    "amount":
+                        settlement_amount,
+
+                    "seller_id":
+                        seller_id,
+
+                    "seller_type":
+                        order.get(
+                            "seller_type"
+                        ),
+
+                    "order_status":
+                        "completed",
+
+                    "wallet_credited":
+                        settlement_result.get(
+                            "wallet_credited",
+                            False,
+                        ),
+
+                    "already_processed":
+                        settlement_result.get(
+                            "already_processed",
+                            False,
+                        ),
+
+                },
+
+            )
+
+    except Exception as e:
+
+        print(
+            "SELLER SETTLEMENT NOTIFICATION ERROR:",
+            str(e),
+        )
+
+    # ========================================================
     # RETURN
     # ========================================================
 
@@ -1516,7 +1501,7 @@ async def complete_order(
             settlement_result.get(
                 "seller_id"
             )
-            or updated_order.get(
+            or order.get(
                 "seller_id"
             ),
 
@@ -1524,7 +1509,7 @@ async def complete_order(
             settlement_result.get(
                 "seller_type"
             )
-            or updated_order.get(
+            or order.get(
                 "seller_type"
             ),
 
@@ -1532,7 +1517,7 @@ async def complete_order(
             settlement_result.get(
                 "amount"
             )
-            or updated_order.get(
+            or order.get(
                 "total_amount"
             ),
 
@@ -1545,7 +1530,7 @@ async def complete_order(
         "already_processed":
             settlement_result.get(
                 "already_processed",
-                False,
+                already_completed,
             ),
 
     }
@@ -2025,7 +2010,10 @@ async def pay_order(
         "=========================================="
     )
 
-    if not isinstance(mtn_response, dict):
+    if not isinstance(
+        mtn_response,
+        dict,
+    ):
 
         raise HTTPException(
             status_code=502,
@@ -2201,9 +2189,9 @@ async def pay_order(
 #
 # FAILED / REJECTED:
 #
-# release reserved stock
-# +
-# cancel order
+#     release reserved stock
+#     +
+#     cancel order
 #
 # are handled atomically by PostgreSQL.
 # ============================================================
@@ -2682,4 +2670,3 @@ async def check_payment_status(
                 "still being processed."
             ),
     }
-
