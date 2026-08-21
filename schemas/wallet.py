@@ -27,7 +27,7 @@ class WalletEarning(BaseModel):
     amount: float = Field(
         ...,
         gt=0,
-        description="Amount earned"
+        description="Amount earned",
     )
 
     reference_id: str | None = None
@@ -38,80 +38,84 @@ class WalletEarning(BaseModel):
 # =====================================
 # WITHDRAWAL REQUEST
 # =====================================
+#
+# CANONICAL IDENTITY:
+#
+#     seller_id
+#     seller_type
+#
+# Backward compatibility:
+#
+#     farmer_id
+#
+# Older farmer Flutter code may still
+# send farmer_id.
+#
+# New Flutter code sends seller_id.
+# =====================================
 
 class WithdrawalCreate(BaseModel):
 
     # =================================
-    # NEW PRIMARY SELLER ID
+    # CANONICAL SELLER ID
     # =================================
-    #
-    # This is now the preferred field.
     #
     # Farmer:
-    #     seller_id = farmer UUID
+    #     farmer UUID
     #
     # Supplier:
-    #     seller_id = supplier UUID
+    #     supplier UUID
     #
-    # =================================
 
     seller_id: str | None = Field(
         default=None,
         description=(
-            "UUID of the seller whose wallet "
-            "will be withdrawn from"
-        )
+            "UUID of the seller making "
+            "the withdrawal"
+        ),
     )
 
     # =================================
-    # BACKWARD COMPATIBILITY
+    # LEGACY FARMER ID
     # =================================
     #
-    # Existing Flutter farmer withdrawal
-    # requests may still send farmer_id.
+    # Retained temporarily so older
+    # farmer clients do not break.
     #
-    # Backend will use:
+    # New code should use seller_id.
     #
-    #     seller_id
-    #
-    # first, then:
-    #
-    #     farmer_id
-    #
-    # as a fallback.
-    #
-    # =================================
 
     farmer_id: str | None = Field(
         default=None,
         description=(
-            "Legacy farmer UUID. Used as seller_id "
-            "fallback for backward compatibility."
-        )
+            "Legacy farmer UUID. "
+            "Used only when seller_id "
+            "is not supplied."
+        ),
     )
 
     # =================================
-    # WITHDRAWAL AMOUNT
+    # AMOUNT
     # =================================
 
     amount: float = Field(
         ...,
         gt=0,
-        description="Amount to withdraw"
+        description="Amount to withdraw",
     )
 
     # =================================
-    # MOBILE MONEY NUMBER
+    # MOBILE NUMBER
     # =================================
 
     mobile_number: str = Field(
         ...,
         min_length=10,
-        max_length=15
+        max_length=15,
     )
 
     # =================================
-    # MOBILE NETWORK
+    # NETWORK
     # =================================
 
     network: MobileNetwork
@@ -123,14 +127,14 @@ class WithdrawalCreate(BaseModel):
     # farmer
     # supplier
     #
-    # Defaults to farmer for backward
-    # compatibility.
+    # Defaults to farmer so existing
+    # farmer requests remain compatible.
     #
-    # =================================
 
     seller_type: str = Field(
         default="farmer",
         description=(
-            "Wallet seller type: farmer or supplier"
-        )
+            "Wallet seller type: "
+            "farmer or supplier"
+        ),
     )
