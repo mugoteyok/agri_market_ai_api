@@ -188,7 +188,6 @@ async def create_promotion(
 
         )
 
-
     # ========================================================
     # VALIDATE DURATION
     # ========================================================
@@ -196,7 +195,6 @@ async def create_promotion(
     promotion_fee = get_promotion_fee(
         promotion.duration_days
     )
-
 
     # ========================================================
     # GET PRODUCT
@@ -234,7 +232,6 @@ async def create_promotion(
 
         )
 
-
     if not product_response.data:
 
         raise HTTPException(
@@ -245,9 +242,7 @@ async def create_promotion(
 
         )
 
-
     product = product_response.data[0]
-
 
     # ========================================================
     # VERIFY PRODUCT OWNER
@@ -269,7 +264,6 @@ async def create_promotion(
 
         )
 
-
     # ========================================================
     # VERIFY SUPPLIER PRODUCT
     # ========================================================
@@ -287,7 +281,6 @@ async def create_promotion(
 
         )
 
-
     if product.get("product_type") != "supply":
 
         raise HTTPException(
@@ -300,7 +293,6 @@ async def create_promotion(
             )
 
         )
-
 
     if product.get("status") != "available":
 
@@ -315,7 +307,6 @@ async def create_promotion(
 
         )
 
-
     # ========================================================
     # ORIGINAL PRICE
     # ========================================================
@@ -327,7 +318,6 @@ async def create_promotion(
         ) or 0
 
     )
-
 
     if original_price <= 0:
 
@@ -341,7 +331,6 @@ async def create_promotion(
 
         )
 
-
     # ========================================================
     # PROMOTED PRICE
     # ========================================================
@@ -349,7 +338,6 @@ async def create_promotion(
     promoted_price = float(
         promotion.promoted_price
     )
-
 
     if promoted_price >= original_price:
 
@@ -363,7 +351,6 @@ async def create_promotion(
             )
 
         )
-
 
     # ========================================================
     # CALCULATE DISCOUNT
@@ -384,7 +371,6 @@ async def create_promotion(
 
     )
 
-
     # ========================================================
     # CHECK EXISTING PROMOTION
     # ========================================================
@@ -403,20 +389,16 @@ async def create_promotion(
         )
 
         .in_(
-
             "status",
-
             [
                 "pending",
                 "active"
             ]
-
         )
 
         .execute()
 
     )
-
 
     if existing_response.data:
 
@@ -431,19 +413,18 @@ async def create_promotion(
 
         )
 
-
     # ========================================================
     # CREATE PROMOTION
     #
     # The promotion does NOT start yet.
-    # starts_at and expires_at are only assigned after
-    # MTN confirms successful payment.
+    #
+    # starts_at and expires_at are only assigned
+    # after MTN confirms successful payment.
     # ========================================================
 
     now = datetime.now(
         timezone.utc
     )
-
 
     promotion_data = {
 
@@ -502,7 +483,6 @@ async def create_promotion(
 
     }
 
-
     try:
 
         response = (
@@ -534,7 +514,6 @@ async def create_promotion(
 
         )
 
-
     if not response.data:
 
         raise HTTPException(
@@ -546,7 +525,6 @@ async def create_promotion(
             )
 
         )
-
 
     return {
 
@@ -611,7 +589,6 @@ async def pay_for_promotion(
 
     )
 
-
     if not response.data:
 
         raise HTTPException(
@@ -622,9 +599,7 @@ async def pay_for_promotion(
 
         )
 
-
     promotion = response.data[0]
-
 
     # ========================================================
     # PREVENT DOUBLE PAYMENT
@@ -645,7 +620,6 @@ async def pay_for_promotion(
             )
 
         )
-
 
     # ========================================================
     # PREVENT INVALID STATUS
@@ -670,7 +644,6 @@ async def pay_for_promotion(
 
         )
 
-
     # ========================================================
     # PROMOTION FEE
     # ========================================================
@@ -683,11 +656,9 @@ async def pay_for_promotion(
 
     )
 
-
     promotion_fee = get_promotion_fee(
         duration_days
     )
-
 
     # ========================================================
     # CHECK FOR EXISTING PAYMENT
@@ -704,7 +675,6 @@ async def pay_for_promotion(
             "mtn_reference_id"
         )
     )
-
 
     if (
 
@@ -745,7 +715,6 @@ async def pay_for_promotion(
 
         }
 
-
     # ========================================================
     # NORMALIZE PHONE NUMBER
     # ========================================================
@@ -754,7 +723,6 @@ async def pay_for_promotion(
         payment.mobile_number
     )
 
-
     # ========================================================
     # CREATE INTERNAL PAYMENT REFERENCE
     # ========================================================
@@ -762,7 +730,6 @@ async def pay_for_promotion(
     payment_reference = str(
         uuid.uuid4()
     )
-
 
     # ========================================================
     # REQUEST MTN PAYMENT
@@ -807,7 +774,6 @@ async def pay_for_promotion(
 
         )
 
-
     # ========================================================
     # MTN REQUEST ACCEPTED
     # ========================================================
@@ -831,7 +797,6 @@ async def pay_for_promotion(
 
         )
 
-
     # ========================================================
     # MTN REFERENCE
     # ========================================================
@@ -841,7 +806,6 @@ async def pay_for_promotion(
             "reference_id"
         )
     )
-
 
     if not mtn_reference_id:
 
@@ -855,7 +819,6 @@ async def pay_for_promotion(
             )
 
         )
-
 
     # ========================================================
     # SAVE PAYMENT INFORMATION
@@ -876,7 +839,6 @@ async def pay_for_promotion(
             "Mobile Money",
 
     }
-
 
     payment_update_response = (
 
@@ -899,7 +861,6 @@ async def pay_for_promotion(
 
     )
 
-
     if not payment_update_response.data:
 
         raise HTTPException(
@@ -913,7 +874,6 @@ async def pay_for_promotion(
             )
 
         )
-
 
     # ========================================================
     # SUCCESS RESPONSE
@@ -992,7 +952,6 @@ async def check_promotion_payment_status(
 
     )
 
-
     if not response.data:
 
         raise HTTPException(
@@ -1003,9 +962,7 @@ async def check_promotion_payment_status(
 
         )
 
-
     promotion = response.data[0]
-
 
     # ========================================================
     # ALREADY PAID
@@ -1022,7 +979,6 @@ async def check_promotion_payment_status(
             )
         )
 
-
         if expires_at_value:
 
             expires_at = datetime.fromisoformat(
@@ -1037,7 +993,6 @@ async def check_promotion_payment_status(
             now = datetime.now(
                 timezone.utc
             )
-
 
             if expires_at <= now:
 
@@ -1065,13 +1020,18 @@ async def check_promotion_payment_status(
 
                 )
 
-
                 if update_response.data:
 
                     promotion = (
                         update_response.data[0]
                     )
 
+        # ====================================================
+        # ALREADY PAID RESPONSE
+        #
+        # Return BOTH "status" and "promotion_status"
+        # so Flutter can reliably read either field.
+        # ====================================================
 
         return {
 
@@ -1081,6 +1041,11 @@ async def check_promotion_payment_status(
             "payment_status":
                 promotion.get(
                     "payment_status"
+                ),
+
+            "status":
+                promotion.get(
+                    "status"
                 ),
 
             "promotion_status":
@@ -1098,7 +1063,6 @@ async def check_promotion_payment_status(
 
         }
 
-
     # ========================================================
     # GET MTN REFERENCE
     # ========================================================
@@ -1110,7 +1074,6 @@ async def check_promotion_payment_status(
         )
 
     )
-
 
     if not mtn_reference_id:
 
@@ -1125,7 +1088,6 @@ async def check_promotion_payment_status(
             )
 
         )
-
 
     # ========================================================
     # QUERY MTN
@@ -1155,7 +1117,6 @@ async def check_promotion_payment_status(
 
         )
 
-
     # ========================================================
     # READ MTN STATUS
     # ========================================================
@@ -1171,7 +1132,6 @@ async def check_promotion_payment_status(
 
     )
 
-
     # ========================================================
     # SUCCESSFUL PAYMENT
     # ========================================================
@@ -1182,7 +1142,6 @@ async def check_promotion_payment_status(
             timezone.utc
         )
 
-
         duration_days = int(
 
             promotion.get(
@@ -1190,7 +1149,6 @@ async def check_promotion_payment_status(
             ) or 0
 
         )
-
 
         if duration_days not in PROMOTION_PRICES:
 
@@ -1204,7 +1162,6 @@ async def check_promotion_payment_status(
 
             )
 
-
         starts_at = paid_at
 
         expires_at = (
@@ -1216,7 +1173,6 @@ async def check_promotion_payment_status(
             )
 
         )
-
 
         # ====================================================
         # GET PRODUCT INFORMATION
@@ -1261,7 +1217,6 @@ async def check_promotion_payment_status(
                 str(e),
             )
 
-
         product_name = (
 
             product.get("product_name")
@@ -1271,7 +1226,6 @@ async def check_promotion_payment_status(
             else "Farm supply product"
 
         )
-
 
         # ====================================================
         # ACTIVATE PROMOTION
@@ -1321,9 +1275,9 @@ async def check_promotion_payment_status(
 
         )
 
-
         # ====================================================
-        # CHECK WHETHER ANOTHER REQUEST ALREADY ACTIVATED IT
+        # CHECK WHETHER ANOTHER REQUEST
+        # ALREADY ACTIVATED IT
         # ====================================================
 
         if not update_response.data:
@@ -1349,7 +1303,6 @@ async def check_promotion_payment_status(
 
             )
 
-
             latest_promotion = (
 
                 latest_response.data[0]
@@ -1360,13 +1313,19 @@ async def check_promotion_payment_status(
 
             )
 
-
             if (
                 latest_promotion.get(
                     "payment_status"
                 )
                 == "paid"
             ):
+
+                # ============================================
+                # ALREADY ACTIVATED RESPONSE
+                #
+                # Return BOTH "status" and
+                # "promotion_status".
+                # ============================================
 
                 return {
 
@@ -1375,6 +1334,11 @@ async def check_promotion_payment_status(
 
                     "payment_status":
                         "paid",
+
+                    "status":
+                        latest_promotion.get(
+                            "status"
+                        ),
 
                     "promotion_status":
                         latest_promotion.get(
@@ -1407,7 +1371,6 @@ async def check_promotion_payment_status(
 
                 }
 
-
             raise HTTPException(
 
                 status_code=500,
@@ -1420,7 +1383,6 @@ async def check_promotion_payment_status(
 
             )
 
-
         # ====================================================
         # PROMOTION HAS JUST BEEN ACTIVATED
         #
@@ -1430,7 +1392,6 @@ async def check_promotion_payment_status(
         seller_id = (
             promotion.get("seller_id")
         )
-
 
         promotion_notification_data = {
 
@@ -1479,7 +1440,6 @@ async def check_promotion_payment_status(
 
         }
 
-
         # ====================================================
         # NOTIFY SUPPLIER
         # ====================================================
@@ -1506,7 +1466,6 @@ async def check_promotion_payment_status(
 
             )
 
-
         # ====================================================
         # NOTIFY FARMERS
         # ====================================================
@@ -1530,9 +1489,11 @@ async def check_promotion_payment_status(
 
         )
 
-
         # ====================================================
         # SUCCESS RESPONSE
+        #
+        # Return BOTH "status" and
+        # "promotion_status".
         # ====================================================
 
         return {
@@ -1542,6 +1503,9 @@ async def check_promotion_payment_status(
 
             "payment_status":
                 "paid",
+
+            "status":
+                "active",
 
             "promotion_status":
                 "active",
@@ -1567,7 +1531,6 @@ async def check_promotion_payment_status(
                 )
 
         }
-
 
     # ========================================================
     # FAILED PAYMENT
@@ -1605,6 +1568,12 @@ async def check_promotion_payment_status(
 
         )
 
+        # ====================================================
+        # FAILED RESPONSE
+        #
+        # Return BOTH "status" and
+        # "promotion_status".
+        # ====================================================
 
         return {
 
@@ -1613,6 +1582,11 @@ async def check_promotion_payment_status(
 
             "payment_status":
                 "failed",
+
+            "status":
+                promotion.get(
+                    "status"
+                ),
 
             "promotion_status":
                 promotion.get(
@@ -1627,9 +1601,15 @@ async def check_promotion_payment_status(
 
         }
 
-
     # ========================================================
     # STILL PROCESSING
+    # ========================================================
+
+    # ========================================================
+    # PENDING RESPONSE
+    #
+    # Return BOTH "status" and
+    # "promotion_status".
     # ========================================================
 
     return {
@@ -1639,6 +1619,11 @@ async def check_promotion_payment_status(
 
         "payment_status":
             "pending",
+
+        "status":
+            promotion.get(
+                "status"
+            ),
 
         "promotion_status":
             promotion.get(
@@ -1702,17 +1687,14 @@ async def get_supplier_promotions(
 
         )
 
-
         promotions = (
             response.data
             or []
         )
 
-
         now = datetime.now(
             timezone.utc
         )
-
 
         for promotion in promotions:
 
@@ -1737,7 +1719,6 @@ async def get_supplier_promotions(
                     )
 
                 )
-
 
                 if expires_at <= now:
 
@@ -1765,21 +1746,17 @@ async def get_supplier_promotions(
 
                     )
 
-
                     if update_response.data:
 
                         promotion.update(
                             update_response.data[0]
                         )
 
-
         return promotions
-
 
     except HTTPException:
 
         raise
-
 
     except Exception as e:
 
@@ -1808,7 +1785,6 @@ async def get_active_promotions():
         now = datetime.now(
             timezone.utc
         ).isoformat()
-
 
         response = (
 
@@ -1849,9 +1825,7 @@ async def get_active_promotions():
 
         )
 
-
         return response.data or []
-
 
     except Exception as e:
 
@@ -1903,7 +1877,6 @@ async def cancel_promotion(
 
         )
 
-
         if not response.data:
 
             raise HTTPException(
@@ -1916,7 +1889,6 @@ async def cancel_promotion(
 
             )
 
-
         return {
 
             "message":
@@ -1927,11 +1899,9 @@ async def cancel_promotion(
 
         }
 
-
     except HTTPException:
 
         raise
-
 
     except Exception as e:
 
@@ -1983,7 +1953,6 @@ async def expire_promotion(
 
         )
 
-
         if not response.data:
 
             raise HTTPException(
@@ -1996,7 +1965,6 @@ async def expire_promotion(
 
             )
 
-
         return {
 
             "message":
@@ -2007,11 +1975,9 @@ async def expire_promotion(
 
         }
 
-
     except HTTPException:
 
         raise
-
 
     except Exception as e:
 
