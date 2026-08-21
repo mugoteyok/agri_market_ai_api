@@ -48,7 +48,7 @@ async def get_wallet(
     # --------------------------------------------------------
     # CREATE FARMER WALLET IF MISSING
     #
-    # This is retained for backward compatibility with the
+    # Retained for backward compatibility with the
     # existing farmer wallet implementation.
     # --------------------------------------------------------
 
@@ -82,8 +82,8 @@ async def get_wallet(
 #
 # Works for:
 #
-# Farmer
-# Supplier
+#   Farmer
+#   Supplier
 #
 # GET /api/marketplace/wallet/seller/{seller_id}
 #
@@ -92,6 +92,7 @@ async def get_wallet(
 # GET ONLY READS.
 #
 # If wallet does not exist, return 404.
+#
 # Creation is handled by:
 #
 # POST /wallet/seller/create
@@ -231,8 +232,8 @@ async def create_wallet(
 #
 # Works for:
 #
-# Farmer
-# Supplier
+#   Farmer
+#   Supplier
 #
 # POST /api/marketplace/wallet/seller/create
 # ============================================================
@@ -449,34 +450,29 @@ async def credit_wallet(
 #
 # POST /api/marketplace/wallet/withdraw
 #
-# Works with:
+# Supports:
 #
 #   farmer
 #   supplier
 #
 # IMPORTANT:
 #
-# The wallet is identified using:
+# The wallet is identified ONLY by:
 #
-#     seller_id
-#     seller_type
+#   seller_id
+#   seller_type
 #
-# This prevents a supplier from accidentally using a farmer
-# wallet belonging to the same UUID.
+# This prevents supplier withdrawals from accidentally
+# touching a farmer wallet.
 #
-# SUPPLIER WITHDRAWAL:
+# Backward compatibility:
 #
-#     seller_id   = supplier UUID
-#     seller_type = supplier
+# WithdrawalCreate still accepts farmer_id.
 #
-#     farmer_id   = NULL
+# The backend resolves:
 #
-# FARMER WITHDRAWAL:
-#
-#     seller_id   = farmer UUID
-#     seller_type = farmer
-#
-#     farmer_id   = farmer UUID
+#   seller_id -> preferred
+#   farmer_id -> fallback
 # ============================================================
 
 @router.post("/wallet/withdraw")
@@ -488,12 +484,28 @@ async def withdraw(
     # IDENTIFY SELLER
     # ========================================================
 
-    seller_id = data.farmer_id
+    seller_id = (
+        data.seller_id
+        or data.farmer_id
+    )
 
     seller_type = (
         data.seller_type
         or "farmer"
     ).strip().lower()
+
+    # ========================================================
+    # VALIDATE SELLER ID
+    # ========================================================
+
+    if not seller_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Seller ID is required.",
+        )
+
+    seller_id = seller_id.strip()
 
     # ========================================================
     # VALIDATE SELLER TYPE
@@ -510,17 +522,6 @@ async def withdraw(
                 "Invalid seller type. "
                 "Must be farmer or supplier."
             ),
-        )
-
-    # ========================================================
-    # VALIDATE SELLER ID
-    # ========================================================
-
-    if not seller_id:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Seller ID is required.",
         )
 
     # ========================================================
@@ -550,28 +551,25 @@ async def withdraw(
 
     # ========================================================
     # NORMALIZE PHONE NUMBER
-    #
-    # Examples:
-    #
-    # 0772123456
-    #     ->
-    # 256772123456
-    #
-    # +256772123456
-    #     ->
-    # 256772123456
-    #
-    # 256772123456
-    #     ->
-    # 256772123456
     # ========================================================
 
     phone_number = (
         data.mobile_number
         .strip()
         .replace(" ", "")
+        .replace("-", "")
         .replace("+", "")
     )
+
+    # --------------------------------------------------------
+    # Convert:
+    #
+    # 07XXXXXXXX
+    #
+    # into:
+    #
+    # 2567XXXXXXXX
+    # --------------------------------------------------------
 
     if phone_number.startswith("0"):
 
@@ -588,7 +586,9 @@ async def withdraw(
 
         raise HTTPException(
             status_code=400,
-            detail="Invalid Mobile Money phone number.",
+            detail=(
+                "Invalid Mobile Money phone number."
+            ),
         )
 
     if not phone_number.startswith("256"):
@@ -611,8 +611,6 @@ async def withdraw(
 
     # ========================================================
     # FIND EXACT SELLER WALLET
-    #
-    # IMPORTANT:
     #
     # NEVER search by farmer_id here.
     #
@@ -643,12 +641,17 @@ async def withdraw(
         .execute()
     )
 
+    # ========================================================
+    # WALLET NOT FOUND
+    # ========================================================
+
     if not wallet_response.data:
 
         raise HTTPException(
             status_code=404,
             detail=(
-                f"{seller_type.capitalize()} wallet not found."
+                f"{seller_type.capitalize()} "
+                "wallet not found."
             ),
         )
 
@@ -657,7 +660,7 @@ async def withdraw(
     # ========================================================
     # CONFIRM WALLET IDENTITY
     #
-    # Extra safety check.
+    # Extra protection against an unexpected database result.
     # ========================================================
 
     actual_seller_id = wallet.get(
@@ -667,7 +670,7 @@ async def withdraw(
     actual_seller_type = (
         wallet.get("seller_type")
         or ""
-    ).lower()
+    ).strip().lower()
 
     if str(actual_seller_id) != str(seller_id):
 
@@ -686,6 +689,22 @@ async def withdraw(
             detail=(
                 "Wallet seller type does not match "
                 "withdrawal seller."
+            ),
+        )
+
+    # ========================================================
+    # CONFIRM WALLET PRIMARY KEY
+    # ========================================================
+
+    wallet_id = wallet.get("id")
+
+    if not wallet_id:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Seller wallet is missing its "
+                "primary key."
             ),
         )
 
@@ -734,10 +753,10 @@ async def withdraw(
     #
     # Farmer:
     #
-    #     farmer_id = seller_id
+    #     farmer_id = farmer UUID
     #
-    # This prevents supplier withdrawals from being recorded
-    # as farmer withdrawals.
+    # The seller identity is maintained by the withdrawal
+    # transaction/reference and the seller wallet.
     # ========================================================
 
     withdrawal_data = {
@@ -748,17 +767,23 @@ async def withdraw(
             else None
         ),
 
-        "amount": amount,
+        "amount":
+            amount,
 
-        "phone_number": phone_number,
+        "phone_number":
+            phone_number,
 
-        "provider": data.network.value,
+        "provider":
+            data.network.value,
 
-        "transaction_id": transaction_id,
+        "transaction_id":
+            transaction_id,
 
-        "status": "processing",
+        "status":
+            "processing",
 
-        "created_at": now,
+        "created_at":
+            now,
     }
 
     withdrawal_response = (
@@ -781,11 +806,18 @@ async def withdraw(
 
     # ========================================================
     # SEND MOBILE MONEY
+    # ========================================================
     #
-    # The number sent to MTN is the number supplied for this
-    # specific withdrawal.
+    # The payout destination is the mobile_number supplied
+    # by the seller.
     #
-    # It is NOT derived from farmer_id.
+    # It is NOT determined from farmer_id.
+    #
+    # Therefore:
+    #
+    # Farmer -> farmer's supplied Mobile Money number
+    #
+    # Supplier -> supplier's supplied Mobile Money number
     # ========================================================
 
     try:
@@ -812,6 +844,10 @@ async def withdraw(
             raise Exception(
                 mtn_response.text
             )
+
+        # ====================================================
+        # LOG SUCCESS
+        # ====================================================
 
         print(
             "================================================"
@@ -851,14 +887,7 @@ async def withdraw(
         )
 
         # ====================================================
-        # DEDUCT FROM EXACT WALLET
-        #
-        # IMPORTANT:
-        #
-        # Use the wallet primary key AND seller identity.
-        #
-        # This guarantees that a supplier withdrawal modifies
-        # the supplier wallet, not a farmer wallet.
+        # CALCULATE NEW BALANCE
         # ====================================================
 
         new_balance = (
@@ -866,7 +895,19 @@ async def withdraw(
             - amount
         )
 
-        wallet_update = (
+        # ====================================================
+        # DEDUCT FROM EXACT WALLET
+        #
+        # The update requires ALL THREE:
+        #
+        #   id
+        #   seller_id
+        #   seller_type
+        #
+        # This is deliberate defense-in-depth.
+        # ====================================================
+
+        wallet_update_response = (
             supabase
             .table("wallets")
             .update({
@@ -880,7 +921,7 @@ async def withdraw(
             })
             .eq(
                 "id",
-                wallet["id"],
+                wallet_id,
             )
             .eq(
                 "seller_id",
@@ -890,37 +931,71 @@ async def withdraw(
                 "seller_type",
                 seller_type,
             )
+            .execute()
         )
 
-        wallet_update_response = (
-            wallet_update.execute()
-        )
+        # ====================================================
+        # VERIFY WALLET WAS ACTUALLY UPDATED
+        # ====================================================
 
         if not wallet_update_response.data:
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # MTN has already accepted the payout.
+            #
+            # We cannot pretend the payout failed.
+            #
+            # Leave the withdrawal in processing status for
+            # reconciliation rather than creating another
+            # payout.
+            # ------------------------------------------------
+
+            print(
+                "CRITICAL: MTN payout accepted but "
+                "wallet deduction failed."
+            )
+
+            print(
+                "seller_id:",
+                seller_id,
+            )
+
+            print(
+                "seller_type:",
+                seller_type,
+            )
+
+            print(
+                "transaction_id:",
+                transaction_id,
+            )
 
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    "Mobile Money payment was accepted "
-                    "but wallet balance could not be "
-                    "updated."
+                    "Mobile Money payment was accepted, "
+                    "but the seller wallet could not be "
+                    "updated. The withdrawal requires "
+                    "reconciliation."
                 ),
             )
 
         # ====================================================
-        # CREATE WITHDRAWAL TRANSACTION
+        # CREATE SELLER WITHDRAWAL TRANSACTION
         #
         # SUPPLIER:
         #
-        # farmer_id = NULL
-        # seller_id = supplier UUID
-        # seller_type = supplier
+        #   farmer_id   = NULL
+        #   seller_id   = supplier UUID
+        #   seller_type = supplier
         #
         # FARMER:
         #
-        # farmer_id = farmer UUID
-        # seller_id = farmer UUID
-        # seller_type = farmer
+        #   farmer_id   = farmer UUID
+        #   seller_id   = farmer UUID
+        #   seller_type = farmer
         # ====================================================
 
         transaction_response = (
@@ -952,13 +1027,12 @@ async def withdraw(
                 "reference_id":
                     transaction_id,
 
-                "description":
-                    (
-                        "Supplier Mobile Money withdrawal"
-                        if seller_type == "supplier"
-                        else
-                        "Farmer Mobile Money withdrawal"
-                    ),
+                "description": (
+                    "Supplier Mobile Money withdrawal"
+                    if seller_type == "supplier"
+                    else
+                    "Farmer Mobile Money withdrawal"
+                ),
 
                 "created_at":
                     now,
@@ -967,11 +1041,35 @@ async def withdraw(
             .execute()
         )
 
+        # ====================================================
+        # VERIFY TRANSACTION
+        # ====================================================
+
         if not transaction_response.data:
 
             print(
-                "WARNING: Wallet deducted but "
+                "CRITICAL: Wallet deducted but "
                 "withdrawal transaction was not created."
+            )
+
+            print(
+                "seller_id:",
+                seller_id,
+            )
+
+            print(
+                "seller_type:",
+                seller_type,
+            )
+
+            print(
+                "amount:",
+                amount,
+            )
+
+            print(
+                "transaction_id:",
+                transaction_id,
             )
 
         # ====================================================
@@ -1033,30 +1131,32 @@ async def withdraw(
         }
 
     # ========================================================
-    # MOBILE MONEY FAILED
+    # HTTP EXCEPTION
     # ========================================================
 
-    except HTTPException:
+    except HTTPException as e:
 
         # ----------------------------------------------------
-        # Preserve HTTPException without converting it into
-        # a generic 500.
+        # IMPORTANT:
+        #
+        # Do NOT automatically mark the withdrawal as failed
+        # here.
+        #
+        # If MTN already accepted the payout but the database
+        # update failed, the withdrawal must remain
+        # processing/reconciliation.
         # ----------------------------------------------------
 
-        (
-            supabase
-            .table("withdrawals")
-            .update({
-                "status": "failed",
-            })
-            .eq(
-                "transaction_id",
-                transaction_id,
-            )
-            .execute()
+        print(
+            "WITHDRAWAL HTTP ERROR:",
+            str(e),
         )
 
         raise
+
+    # ========================================================
+    # MOBILE MONEY / OTHER FAILURE
+    # ========================================================
 
     except Exception as e:
 
@@ -1066,12 +1166,10 @@ async def withdraw(
         )
 
         # ----------------------------------------------------
-        # Mark withdrawal failed.
+        # At this point the exception normally means the MTN
+        # request itself failed before the wallet was touched.
         #
-        # IMPORTANT:
-        #
-        # The wallet has NOT been deducted yet because the
-        # deduction happens only after transfer_money succeeds.
+        # Therefore mark the withdrawal as failed.
         # ----------------------------------------------------
 
         (
@@ -1130,8 +1228,8 @@ async def transactions(
 #
 # Works for:
 #
-# Farmer
-# Supplier
+#   Farmer
+#   Supplier
 #
 # GET /api/marketplace/transactions/seller/{seller_id}
 # ============================================================
