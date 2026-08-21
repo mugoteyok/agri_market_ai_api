@@ -1091,6 +1091,17 @@ async def update_order_status(
     # ========================================================
     # SELLER SETTLEMENT NOTIFICATION
     #
+    # IMPORTANT:
+    #
+    # The settlement RPC is the authoritative source for:
+    #
+    #     seller_id
+    #     seller_type
+    #     seller_amount
+    #
+    # Only fall back to the old order data if the RPC does
+    # not return those values.
+    #
     # Only send this when the order has been completed
     # through the settlement RPC.
     # ========================================================
@@ -1099,26 +1110,43 @@ async def update_order_status(
 
         try:
 
-            seller_id = order.get(
-                "seller_id"
+            # ------------------------------------------------
+            # AUTHORITATIVE SELLER INFORMATION
+            # ------------------------------------------------
+
+            seller_id = (
+                settlement_result.get(
+                    "seller_id"
+                )
+                or order.get(
+                    "seller_id"
+                )
+            )
+
+            seller_type = (
+                settlement_result.get(
+                    "seller_type"
+                )
+                or order.get(
+                    "seller_type"
+                )
             )
 
             if seller_id:
 
+                # ------------------------------------------------
+                # AUTHORITATIVE SELLER EARNINGS
+                # ------------------------------------------------
+
                 settlement_amount = (
                     settlement_result.get(
-                        "amount"
+                        "seller_amount"
                     )
                 )
 
                 if settlement_amount is None:
 
-                    settlement_amount = (
-                        order.get(
-                            "total_amount"
-                        )
-                        or 0
-                    )
+                    settlement_amount = 0
 
                 notify_seller(
 
@@ -1149,9 +1177,7 @@ async def update_order_status(
                             seller_id,
 
                         "seller_type":
-                            order.get(
-                                "seller_type"
-                            ),
+                            seller_type,
 
                         "order_status":
                             "completed",
@@ -1395,30 +1421,58 @@ async def complete_order(
 
     # ========================================================
     # NOTIFY SELLER
+    #
+    # IMPORTANT:
+    #
+    # Use settlement_result as the authoritative source for:
+    #
+    #     seller_id
+    #     seller_type
+    #     seller_amount
+    #
+    # This ensures the seller notification matches the seller
+    # and amount actually processed by the settlement RPC.
     # ========================================================
 
     try:
 
-        seller_id = order.get(
-            "seller_id"
+        # ----------------------------------------------------
+        # AUTHORITATIVE SELLER INFORMATION
+        # ----------------------------------------------------
+
+        seller_id = (
+            settlement_result.get(
+                "seller_id"
+            )
+            or order.get(
+                "seller_id"
+            )
+        )
+
+        seller_type = (
+            settlement_result.get(
+                "seller_type"
+            )
+            or order.get(
+                "seller_type"
+            )
         )
 
         if seller_id:
 
+            # ------------------------------------------------
+            # AUTHORITATIVE SELLER EARNINGS
+            # ------------------------------------------------
+
             settlement_amount = (
                 settlement_result.get(
-                    "amount"
+                    "seller_amount"
                 )
             )
 
             if settlement_amount is None:
 
-                settlement_amount = (
-                    order.get(
-                        "total_amount"
-                    )
-                    or 0
-                )
+                settlement_amount = 0
 
             notify_seller(
 
@@ -1449,9 +1503,7 @@ async def complete_order(
                         seller_id,
 
                     "seller_type":
-                        order.get(
-                            "seller_type"
-                        ),
+                        seller_type,
 
                     "order_status":
                         "completed",
