@@ -42,7 +42,7 @@ def utc_now():
 #
 # IMPORTANT:
 #
-# Order creation and stock reservation are now handled
+# Order creation and stock reservation are handled
 # atomically inside PostgreSQL.
 #
 # PostgreSQL RPC:
@@ -602,35 +602,23 @@ async def accept_order(
 # ============================================================
 # UPDATE ORDER STATUS
 #
-# PUT /api/marketplace/orders/{order_id}/status?status=processing
+# PUT /api/marketplace/orders/{order_id}/status?status=ready
 #
 # Used by supplier/farmer dashboards to move an order through
 # its processing lifecycle.
 #
-# IMPORTANT:
+# ORDER FLOW:
 #
-# A supplier can only start processing an order after payment
-# has been confirmed.
-#
-# Supported statuses:
-#
-#     placed
-#     accepted
-#     processing
-#     completed
-#     cancelled
+# placed
+# accepted
+# processing
+# ready
+# completed
 #
 # IMPORTANT:
 #
-# We intentionally only update:
-#
-#     order_status
-#     status
-#
-# here.
-#
-# This avoids depending on processing_at/completed_at columns
-# that may not currently exist in the orders table.
+# Processing, ready, and completed orders require confirmed
+# payment.
 # ============================================================
 
 @router.put("/orders/{order_id}/status")
@@ -653,6 +641,7 @@ async def update_order_status(
         "placed",
         "accepted",
         "processing",
+        "ready",
         "completed",
         "cancelled",
     ]
@@ -732,48 +721,30 @@ async def update_order_status(
         )
 
     # ========================================================
-    # PROCESSING REQUIRES PAYMENT
-    #
-    # This prevents the supplier from processing an unpaid
-    # order.
+    # PROCESSING / READY / COMPLETED REQUIRE PAYMENT
     # ========================================================
 
-    if new_status == "processing":
+    if new_status in [
+        "processing",
+        "ready",
+        "completed",
+    ]:
 
         if payment_status != "paid":
 
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Order cannot be moved to "
-                    "processing because payment "
-                    "has not been confirmed."
-                ),
-            )
-
-    # ========================================================
-    # COMPLETED REQUIRES PAYMENT
-    # ========================================================
-
-    if new_status == "completed":
-
-        if payment_status != "paid":
-
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "A completed order must "
-                    "have confirmed payment."
+                    f"Order cannot be moved to "
+                    f"{new_status} because payment "
+                    f"has not been confirmed."
                 ),
             )
 
     # ========================================================
     # BUILD UPDATE
     #
-    # IMPORTANT:
-    #
-    # Only use columns that already exist in the current
-    # orders table.
+    # We intentionally update only these two columns.
     # ========================================================
 
     update_data = {
@@ -863,7 +834,55 @@ async def update_order_status(
                             ),
 
                         "order_status":
-                            new_status,
+                            "processing",
+
+                        "payment_status":
+                            payment_status,
+
+                        "seller_id":
+                            order.get(
+                                "seller_id"
+                            ),
+
+                    },
+
+                )
+
+            # ------------------------------------------------
+            # READY
+            # ------------------------------------------------
+
+            elif new_status == "ready":
+
+                notify_buyer(
+
+                    buyer_id=buyer_id,
+
+                    notification_type="order_status",
+
+                    title="Order ready",
+
+                    message=(
+                        f"Your order for "
+                        f"{product_name} "
+                        f"is ready."
+                    ),
+
+                    data={
+
+                        "event":
+                            "order_ready",
+
+                        "order_id":
+                            order_id,
+
+                        "product_id":
+                            order.get(
+                                "product_id"
+                            ),
+
+                        "order_status":
+                            "ready",
 
                         "payment_status":
                             payment_status,
@@ -911,7 +930,7 @@ async def update_order_status(
                             ),
 
                         "order_status":
-                            new_status,
+                            "completed",
 
                         "payment_status":
                             payment_status,
@@ -943,6 +962,12 @@ async def update_order_status(
 # COMPLETE ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/complete
+#
+# IMPORTANT:
+#
+# The normal lifecycle is:
+#
+# placed -> accepted -> processing -> ready -> completed
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
@@ -970,6 +995,10 @@ async def complete_order(
 
     order = response.data[0]
 
+    # ========================================================
+    # PREVENT INVALID STATES
+    # ========================================================
+
     if order.get("order_status") in [
         "completed",
         "cancelled",
@@ -982,6 +1011,24 @@ async def complete_order(
                 "in its current state."
             ),
         )
+
+    # ========================================================
+    # PAYMENT MUST BE CONFIRMED
+    # ========================================================
+
+    if order.get("payment_status") != "paid":
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Order cannot be completed "
+                "because payment has not been confirmed."
+            ),
+        )
+
+    # ========================================================
+    # UPDATE ORDER
+    # ========================================================
 
     update_response = (
         supabase
@@ -1010,6 +1057,10 @@ async def complete_order(
         )
 
     updated_order = update_response.data[0]
+
+    # ========================================================
+    # NOTIFY BUYER
+    # ========================================================
 
     try:
 
@@ -1048,6 +1099,9 @@ async def complete_order(
 
                     "order_status":
                         "completed",
+
+                    "payment_status":
+                        "paid",
 
                     "seller_id":
                         order.get(
@@ -1486,13 +1540,6 @@ async def pay_order(
 
     # ========================================================
     # CREATE EXTERNAL PAYMENT ID
-    #
-    # This is Agri AI Assist's internal transaction ID.
-    #
-    # It is sent to MTN as externalId.
-    #
-    # This is NOT the MTN payment reference used for
-    # payment status checks.
     # ========================================================
 
     payment_reference = str(
@@ -1539,12 +1586,6 @@ async def pay_order(
             ),
         )
 
-    # ========================================================
-    # READ MTN RESPONSE
-    #
-    # request_payment() returns a Python dictionary.
-    # ========================================================
-
     print("========== MTN PAYMENT RESPONSE ==========")
     print(mtn_response)
     print("==========================================")
@@ -1567,8 +1608,6 @@ async def pay_order(
         "status_code"
     )
 
-    # Normalize status code in case MTN service returns
-    # "202" instead of 202.
     try:
 
         mtn_status_code = int(
@@ -1621,11 +1660,6 @@ async def pay_order(
 
     # ========================================================
     # GET MTN REFERENCE ID
-    #
-    # This is the X-Reference-Id sent to MTN.
-    #
-    # It must be stored and later used for payment-status
-    # checks.
     # ========================================================
 
     mtn_reference_id = mtn_response.get(
@@ -1644,16 +1678,6 @@ async def pay_order(
 
     # ========================================================
     # SAVE PAYMENT REFERENCE
-    #
-    # IMPORTANT:
-    #
-    # payment_reference:
-    #     MTN X-Reference-Id
-    #
-    # payment_external_id:
-    #     Agri AI Assist externalId sent to MTN
-    #
-    # Both are stored because they serve different purposes.
     # ========================================================
 
     payment_update = {
@@ -1664,25 +1688,8 @@ async def pay_order(
         "payment_method":
             "Mobile Money",
 
-        # ----------------------------------------------------
-        # MTN X-Reference-Id
-        #
-        # Used for:
-        #
-        # GET /v1_0/requesttopay/{referenceId}
-        #
-        # through get_payment_status().
-        # ----------------------------------------------------
-
         "payment_reference":
             mtn_reference_id,
-
-        # ----------------------------------------------------
-        # Agri AI Assist externalId
-        #
-        # Used by the MTN callback/webhook to identify
-        # the payment and therefore the order.
-        # ----------------------------------------------------
 
         "payment_external_id":
             payment_reference,
@@ -1713,10 +1720,6 @@ async def pay_order(
             ),
         )
 
-    # ========================================================
-    # RESPONSE
-    # ========================================================
-
     return {
 
         "message":
@@ -1737,11 +1740,9 @@ async def pay_order(
         "payment_method":
             "Mobile Money",
 
-        # MTN X-Reference-Id
         "payment_reference":
             mtn_reference_id,
 
-        # Agri AI Assist externalId
         "payment_external_id":
             payment_reference,
 
@@ -1820,8 +1821,6 @@ async def check_payment_status(
 
     # ========================================================
     # GET MTN REFERENCE
-    #
-    # This is the stored MTN X-Reference-Id.
     # ========================================================
 
     payment_reference = (
@@ -1973,10 +1972,6 @@ async def check_payment_status(
 
             }
 
-            # ------------------------------------------------
-            # BUYER
-            # ------------------------------------------------
-
             if buyer_id:
 
                 notify_buyer(
@@ -1995,10 +1990,6 @@ async def check_payment_status(
                     data=order_data,
 
                 )
-
-            # ------------------------------------------------
-            # SELLER
-            # ------------------------------------------------
 
             if seller_id:
 
@@ -2097,10 +2088,6 @@ async def check_payment_status(
 
         result = release_response.data
 
-        # ====================================================
-        # SAFELY READ RELEASE RESULT
-        # ====================================================
-
         if isinstance(result, dict):
 
             stock_released = result.get(
@@ -2161,10 +2148,6 @@ async def check_payment_status(
 
             }
 
-            # ------------------------------------------------
-            # BUYER
-            # ------------------------------------------------
-
             if buyer_id:
 
                 notify_buyer(
@@ -2184,10 +2167,6 @@ async def check_payment_status(
                     data=notification_data,
 
                 )
-
-            # ------------------------------------------------
-            # SELLER
-            # ------------------------------------------------
 
             if seller_id:
 
