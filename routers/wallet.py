@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, HTTPException
 
 from database import supabase
@@ -341,7 +340,7 @@ async def create_seller_wallet(
 
             "wallet":
                 existing.data[0]
-        }
+        )
 
 
     wallet_data = {
@@ -570,8 +569,11 @@ async def credit_wallet(
 # POST /api/marketplace/wallet/withdraw
 #
 # The WithdrawalCreate schema still uses farmer_id for
-# backward compatibility. We use that value as the seller ID
-# when looking up the wallet.
+# backward compatibility.
+#
+# For suppliers, farmer_id contains the supplier UUID.
+#
+# seller_type is now used to ensure we select the exact wallet.
 # ============================================================
 
 @router.post("/wallet/withdraw")
@@ -580,19 +582,41 @@ async def withdraw(
 ):
 
     # ========================================================
-    # GET WALLET
+    # GET EXACT WALLET
     #
-    # First search by seller_id.
-    #
-    # This allows supplier wallets to withdraw because supplier
-    # wallets have:
-    #
-    # seller_id = supplier UUID
-    # seller_type = supplier
-    # farmer_id = NULL
-    #
-    # Then fall back to farmer_id for older farmer wallets.
+    # farmer_id in WithdrawalCreate is kept for backward
+    # compatibility, but for supplier withdrawals it contains
+    # the supplier/seller UUID.
     # ========================================================
+
+    seller_id = data.farmer_id
+
+    seller_type = data.seller_type.lower()
+
+
+    # --------------------------------------------------------
+    # VALIDATE SELLER TYPE
+    # --------------------------------------------------------
+
+    if seller_type not in [
+        "farmer",
+        "supplier"
+    ]:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid seller type."
+        )
+
+
+    # --------------------------------------------------------
+    # FIND EXACT WALLET
+    #
+    # Both seller_id and seller_type are used.
+    #
+    # This prevents a supplier wallet from accidentally
+    # selecting a farmer wallet.
+    # --------------------------------------------------------
 
     wallet_response = (
         supabase
@@ -600,7 +624,11 @@ async def withdraw(
         .select("*")
         .eq(
             "seller_id",
-            data.farmer_id
+            seller_id
+        )
+        .eq(
+            "seller_type",
+            seller_type
         )
         .execute()
     )
@@ -615,10 +643,13 @@ async def withdraw(
 
 
     # --------------------------------------------------------
-    # FALLBACK FOR OLD FARMER WALLETS
+    # BACKWARD COMPATIBILITY
+    #
+    # Older farmer wallets may only be identified using
+    # farmer_id.
     # --------------------------------------------------------
 
-    if wallet is None:
+    if wallet is None and seller_type == "farmer":
 
         old_wallet_response = (
             supabase
@@ -626,7 +657,7 @@ async def withdraw(
             .select("*")
             .eq(
                 "farmer_id",
-                data.farmer_id
+                seller_id
             )
             .execute()
         )
@@ -645,7 +676,9 @@ async def withdraw(
 
         raise HTTPException(
             status_code=404,
-            detail="Wallet not found"
+            detail=(
+                f"{seller_type.capitalize()} wallet not found"
+            )
         )
 
 
@@ -659,16 +692,17 @@ async def withdraw(
     )
 
 
-    seller_id = (
-        wallet.get("seller_id")
-        or data.farmer_id
-    )
+    # Use the actual values stored in the wallet.
+
+    seller_id = wallet.get(
+        "seller_id"
+    ) or data.farmer_id
 
 
     seller_type = (
         wallet.get("seller_type")
-        or "farmer"
-    )
+        or data.seller_type
+    ).lower()
 
 
     # ========================================================
@@ -727,7 +761,7 @@ async def withdraw(
                 data.mobile_number,
 
             "provider":
-                data.network,
+                data.network.value,
 
             "transaction_id":
                 transaction_id,
@@ -816,9 +850,16 @@ async def withdraw(
 
         else:
 
-            wallet_update = wallet_update.eq(
-                "seller_id",
-                seller_id
+            wallet_update = (
+                wallet_update
+                .eq(
+                    "seller_id",
+                    seller_id
+                )
+                .eq(
+                    "seller_type",
+                    seller_type
+                )
             )
 
 
@@ -827,10 +868,6 @@ async def withdraw(
 
         # ====================================================
         # CREATE DEBIT TRANSACTION
-        #
-        # This is the important addition.
-        #
-        # Withdrawals now appear in the transaction history.
         # ====================================================
 
         transaction = (
@@ -1045,4 +1082,3 @@ async def seller_transactions(
 
 
     return response.data
-
