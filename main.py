@@ -7,6 +7,8 @@ from routers.wallet import router as wallet_router
 from routers.promotions import router as promotions_router
 from routers.recommendations import router as recommendations_router
 from routers.subscriptions import router as subscriptions_router
+from routers.farm_intelligence import router as farm_intelligence_router
+
 
 # ============================================================
 # MTN MOBILE MONEY CALLBACK
@@ -125,6 +127,28 @@ app.include_router(
 
 
 # ============================================================
+# FARM INTELLIGENCE
+#
+# Weather forecasting + agricultural decision support
+#
+# Endpoint:
+#
+# GET /api/farm-intelligence?region=Jinja
+#
+# This router is intentionally registered under /api
+# rather than /api/marketplace because Farm Intelligence
+# is a farmer intelligence/weather service, not a marketplace
+# module.
+# ============================================================
+
+app.include_router(
+    farm_intelligence_router,
+    prefix="/api",
+    tags=["Farm Intelligence"]
+)
+
+
+# ============================================================
 # MTN MOBILE MONEY CALLBACK
 #
 # MTN will call this endpoint asynchronously after the
@@ -172,6 +196,7 @@ def home():
             "Product Promotions",
             "AI Farm Supply Recommendations",
             "Subscriptions",
+            "Farm Intelligence",
             "MTN Mobile Money Callback"
         ]
     }
