@@ -47,9 +47,6 @@ async def get_wallet(
 
     # --------------------------------------------------------
     # CREATE FARMER WALLET IF MISSING
-    #
-    # Retained for backward compatibility with the
-    # existing farmer wallet implementation.
     # --------------------------------------------------------
 
     wallet = {
@@ -69,6 +66,7 @@ async def get_wallet(
     )
 
     if not created.data:
+
         raise HTTPException(
             status_code=500,
             detail="Failed to create farmer wallet.",
@@ -86,16 +84,6 @@ async def get_wallet(
 #   Supplier
 #
 # GET /api/marketplace/wallet/seller/{seller_id}
-#
-# IMPORTANT:
-#
-# GET ONLY READS.
-#
-# If wallet does not exist, return 404.
-#
-# Creation is handled by:
-#
-# POST /wallet/seller/create
 # ============================================================
 
 @router.get("/wallet/seller/{seller_id}")
@@ -154,8 +142,6 @@ async def get_seller_wallet(
 
     # --------------------------------------------------------
     # WALLET NOT FOUND
-    #
-    # DO NOT CREATE HERE.
     # --------------------------------------------------------
 
     requested_type = (
@@ -333,9 +319,6 @@ async def create_seller_wallet(
 # CREDIT FARMER WALLET
 #
 # Existing farmer-only endpoint.
-#
-# Marketplace order completion should use the complete-order
-# settlement logic instead of calling this separately.
 # ============================================================
 
 @router.post("/wallet/credit")
@@ -454,25 +437,6 @@ async def credit_wallet(
 #
 #   farmer
 #   supplier
-#
-# IMPORTANT:
-#
-# The wallet is identified ONLY by:
-#
-#   seller_id
-#   seller_type
-#
-# This prevents supplier withdrawals from accidentally
-# touching a farmer wallet.
-#
-# Backward compatibility:
-#
-# WithdrawalCreate still accepts farmer_id.
-#
-# The backend resolves:
-#
-#   seller_id -> preferred
-#   farmer_id -> fallback
 # ============================================================
 
 @router.post("/wallet/withdraw")
@@ -561,16 +525,6 @@ async def withdraw(
         .replace("+", "")
     )
 
-    # --------------------------------------------------------
-    # Convert:
-    #
-    # 07XXXXXXXX
-    #
-    # into:
-    #
-    # 2567XXXXXXXX
-    # --------------------------------------------------------
-
     if phone_number.startswith("0"):
 
         phone_number = (
@@ -611,18 +565,6 @@ async def withdraw(
 
     # ========================================================
     # FIND EXACT SELLER WALLET
-    #
-    # NEVER search by farmer_id here.
-    #
-    # Supplier:
-    #
-    # seller_id   = supplier UUID
-    # seller_type = supplier
-    #
-    # Farmer:
-    #
-    # seller_id   = farmer UUID
-    # seller_type = farmer
     # ========================================================
 
     wallet_response = (
@@ -659,8 +601,6 @@ async def withdraw(
 
     # ========================================================
     # CONFIRM WALLET IDENTITY
-    #
-    # Extra protection against an unexpected database result.
     # ========================================================
 
     actual_seller_id = wallet.get(
@@ -744,19 +684,6 @@ async def withdraw(
 
     # ========================================================
     # CREATE WITHDRAWAL RECORD
-    #
-    # IMPORTANT:
-    #
-    # Supplier:
-    #
-    #     farmer_id = NULL
-    #
-    # Farmer:
-    #
-    #     farmer_id = farmer UUID
-    #
-    # The seller identity is maintained by the withdrawal
-    # transaction/reference and the seller wallet.
     # ========================================================
 
     withdrawal_data = {
@@ -807,18 +734,6 @@ async def withdraw(
     # ========================================================
     # SEND MOBILE MONEY
     # ========================================================
-    #
-    # The payout destination is the mobile_number supplied
-    # by the seller.
-    #
-    # It is NOT determined from farmer_id.
-    #
-    # Therefore:
-    #
-    # Farmer -> farmer's supplied Mobile Money number
-    #
-    # Supplier -> supplier's supplied Mobile Money number
-    # ========================================================
 
     try:
 
@@ -834,16 +749,41 @@ async def withdraw(
 
         # ====================================================
         # CHECK MTN RESPONSE
+        #
+        # transfer_money() returns a dictionary:
+        #
+        # {
+        #     "accepted": bool,
+        #     "status_code": int,
+        #     "reference_id": str,
+        #     "external_id": str,
+        #     "response_text": str,
+        # }
         # ====================================================
 
-        if mtn_response.status_code not in [
-            200,
-            202,
-        ]:
+        if not mtn_response.get("accepted"):
+
+            status_code = mtn_response.get(
+                "status_code"
+            )
+
+            response_text = mtn_response.get(
+                "response_text"
+            )
 
             raise Exception(
-                mtn_response.text
+                f"MTN transfer failed. "
+                f"Status: {status_code}. "
+                f"Response: {response_text}"
             )
+
+        # ====================================================
+        # SAVE MTN TRANSFER REFERENCE
+        # ====================================================
+
+        mtn_reference_id = mtn_response.get(
+            "reference_id"
+        )
 
         # ====================================================
         # LOG SUCCESS
@@ -883,6 +823,11 @@ async def withdraw(
         )
 
         print(
+            "mtn_reference_id:",
+            mtn_reference_id,
+        )
+
+        print(
             "================================================"
         )
 
@@ -897,14 +842,6 @@ async def withdraw(
 
         # ====================================================
         # DEDUCT FROM EXACT WALLET
-        #
-        # The update requires ALL THREE:
-        #
-        #   id
-        #   seller_id
-        #   seller_type
-        #
-        # This is deliberate defense-in-depth.
         # ====================================================
 
         wallet_update_response = (
@@ -940,18 +877,6 @@ async def withdraw(
 
         if not wallet_update_response.data:
 
-            # ------------------------------------------------
-            # IMPORTANT:
-            #
-            # MTN has already accepted the payout.
-            #
-            # We cannot pretend the payout failed.
-            #
-            # Leave the withdrawal in processing status for
-            # reconciliation rather than creating another
-            # payout.
-            # ------------------------------------------------
-
             print(
                 "CRITICAL: MTN payout accepted but "
                 "wallet deduction failed."
@@ -972,6 +897,11 @@ async def withdraw(
                 transaction_id,
             )
 
+            print(
+                "mtn_reference_id:",
+                mtn_reference_id,
+            )
+
             raise HTTPException(
                 status_code=500,
                 detail=(
@@ -984,18 +914,6 @@ async def withdraw(
 
         # ====================================================
         # CREATE SELLER WITHDRAWAL TRANSACTION
-        #
-        # SUPPLIER:
-        #
-        #   farmer_id   = NULL
-        #   seller_id   = supplier UUID
-        #   seller_type = supplier
-        #
-        # FARMER:
-        #
-        #   farmer_id   = farmer UUID
-        #   seller_id   = farmer UUID
-        #   seller_type = farmer
         # ====================================================
 
         transaction_response = (
@@ -1072,6 +990,11 @@ async def withdraw(
                 transaction_id,
             )
 
+            print(
+                "mtn_reference_id:",
+                mtn_reference_id,
+            )
+
         # ====================================================
         # MARK WITHDRAWAL COMPLETED
         # ====================================================
@@ -1122,6 +1045,9 @@ async def withdraw(
             "new_balance":
                 new_balance,
 
+            "mtn_reference_id":
+                mtn_reference_id,
+
             "withdrawal":
                 completed_withdrawal.data,
 
@@ -1135,17 +1061,6 @@ async def withdraw(
     # ========================================================
 
     except HTTPException as e:
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # Do NOT automatically mark the withdrawal as failed
-        # here.
-        #
-        # If MTN already accepted the payout but the database
-        # update failed, the withdrawal must remain
-        # processing/reconciliation.
-        # ----------------------------------------------------
 
         print(
             "WITHDRAWAL HTTP ERROR:",
@@ -1164,13 +1079,6 @@ async def withdraw(
             "MOBILE MONEY WITHDRAWAL ERROR:",
             str(e),
         )
-
-        # ----------------------------------------------------
-        # At this point the exception normally means the MTN
-        # request itself failed before the wallet was touched.
-        #
-        # Therefore mark the withdrawal as failed.
-        # ----------------------------------------------------
 
         (
             supabase
