@@ -707,6 +707,14 @@ async def withdraw(
     #
     # IMPORTANT:
     #
+    # The withdrawal now permanently stores:
+    #
+    #     seller_id
+    #     seller_type
+    #
+    # This allows the confirmation endpoint to identify
+    # both farmers and suppliers directly.
+    #
     # mtn_reference_id is NOT known yet.
     #
     # It will be saved immediately after MTN accepts
@@ -720,6 +728,12 @@ async def withdraw(
             if seller_type == "farmer"
             else None
         ),
+
+        "seller_id":
+            seller_id,
+
+        "seller_type":
+            seller_type,
 
         "amount":
             amount,
@@ -1377,16 +1391,9 @@ async def confirm_withdrawal(
     if transfer_status == "SUCCESSFUL":
 
         # ====================================================
-        # DETERMINE SELLER
+        # CHECK WHETHER FINANCIAL TRANSACTION ALREADY EXISTS
         #
-        # withdrawals currently stores farmer_id.
-        #
-        # For suppliers farmer_id is NULL.
-        #
-        # We therefore need to determine the seller from the
-        # associated transaction.
-        #
-        # First look for an existing transaction.
+        # Prevent duplicate wallet deductions.
         # ====================================================
 
         existing_transaction = (
@@ -1457,83 +1464,99 @@ async def confirm_withdrawal(
             }
 
         # ====================================================
-        # FIND SELLER USING WALLET
+        # DETERMINE SELLER DIRECTLY FROM WITHDRAWAL
         #
-        # The withdrawal itself contains the farmer_id for
-        # farmers, but supplier withdrawals have farmer_id NULL.
+        # Every new withdrawal now stores:
         #
-        # We therefore need a reliable seller mapping.
+        #     seller_id
+        #     seller_type
         #
-        # The safest approach is to locate the wallet whose
-        # seller identity corresponds to the withdrawal.
+        # This works for BOTH:
         #
-        # Since transaction_id is the MTN external ID, we first
-        # check whether a pending transaction exists.
+        #     farmer
+        #     supplier
+        #
         # ====================================================
 
-        farmer_id = withdrawal.get(
-            "farmer_id"
+        seller_id = withdrawal.get(
+            "seller_id"
         )
 
+        seller_type = (
+            withdrawal.get("seller_type")
+            or ""
+        ).strip().lower()
+
         # ----------------------------------------------------
-        # FARMER WITHDRAWAL
+        # FALLBACK FOR OLD FARMER WITHDRAWALS
+        #
+        # Existing withdrawals created before this update may
+        # only have farmer_id.
         # ----------------------------------------------------
 
-        if farmer_id:
+        if not seller_id:
 
-            wallet_response = (
-                supabase
-                .table("wallets")
-                .select("*")
-                .eq(
-                    "seller_id",
-                    farmer_id,
-                )
-                .eq(
-                    "seller_type",
-                    "farmer",
-                )
-                .limit(1)
-                .execute()
+            farmer_id = withdrawal.get(
+                "farmer_id"
             )
 
-            seller_id = farmer_id
-            seller_type = "farmer"
+            if farmer_id:
+
+                seller_id = farmer_id
+                seller_type = "farmer"
 
         # ----------------------------------------------------
-        # SUPPLIER WITHDRAWAL
-        #
-        # IMPORTANT:
-        #
-        # Your current withdrawals table does not contain
-        # seller_id / seller_type.
-        #
-        # Therefore a supplier withdrawal cannot be reliably
-        # mapped back to its supplier using withdrawals alone.
-        #
-        # We handle this by looking for the wallet based on
-        # the mobile number only if your wallets table has a
-        # matching mobile number.
-        #
-        # HOWEVER, your current wallet schema has not shown such
-        # a column.
-        #
-        # Therefore we stop safely rather than deducting the
-        # wrong wallet.
+        # VALIDATE SELLER INFORMATION
         # ----------------------------------------------------
 
-        else:
+        if not seller_id:
 
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "MTN confirmed the supplier withdrawal as "
-                    "successful, but the withdrawal record does "
-                    "not contain seller_id/seller_type. "
-                    "The payout requires reconciliation before "
-                    "the supplier wallet can be safely deducted."
+                    "Withdrawal does not contain a seller ID. "
+                    "Manual reconciliation is required."
                 ),
             )
+
+        if seller_type not in [
+            "farmer",
+            "supplier",
+        ]:
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Withdrawal contains an invalid seller type. "
+                    "Manual reconciliation is required."
+                ),
+            )
+
+        print(
+            "WITHDRAWAL SELLER:",
+            seller_id,
+            seller_type,
+        )
+
+        # ====================================================
+        # FIND EXACT SELLER WALLET
+        # ====================================================
+
+        wallet_response = (
+            supabase
+            .table("wallets")
+            .select("*")
+            .eq(
+                "seller_id",
+                seller_id,
+            )
+            .eq(
+                "seller_type",
+                seller_type,
+            )
+            .limit(1)
+            .execute()
+        )
 
         # ====================================================
         # WALLET MUST EXIST
