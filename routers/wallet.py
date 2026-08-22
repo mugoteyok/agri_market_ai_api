@@ -8,7 +8,10 @@ from schemas.wallet import (
     WithdrawalCreate,
 )
 
-from services.mtn_service import transfer_money
+from services.mtn_service import (
+    transfer_money,
+    get_transfer_status,
+)
 
 from datetime import datetime
 
@@ -437,6 +440,23 @@ async def credit_wallet(
 #
 #   farmer
 #   supplier
+#
+# IMPORTANT:
+#
+# This endpoint DOES NOT immediately mark the withdrawal
+# completed.
+#
+# MTN disbursements are asynchronous.
+#
+# The withdrawal remains:
+#
+#     processing
+#
+# until the confirmation endpoint verifies that MTN reports:
+#
+#     SUCCESSFUL
+#
+# The wallet is only deducted after SUCCESSFUL confirmation.
 # ============================================================
 
 @router.post("/wallet/withdraw")
@@ -684,6 +704,13 @@ async def withdraw(
 
     # ========================================================
     # CREATE WITHDRAWAL RECORD
+    #
+    # IMPORTANT:
+    #
+    # mtn_reference_id is NOT known yet.
+    #
+    # It will be saved immediately after MTN accepts
+    # the transfer.
     # ========================================================
 
     withdrawal_data = {
@@ -705,6 +732,9 @@ async def withdraw(
 
         "transaction_id":
             transaction_id,
+
+        "mtn_reference_id":
+            None,
 
         "status":
             "processing",
@@ -733,6 +763,8 @@ async def withdraw(
 
     # ========================================================
     # SEND MOBILE MONEY
+    #
+    # MTN DISBURSEMENT
     # ========================================================
 
     try:
@@ -771,22 +803,127 @@ async def withdraw(
                 "response_text"
             )
 
-            raise Exception(
-                f"MTN transfer failed. "
-                f"Status: {status_code}. "
-                f"Response: {response_text}"
+            print(
+                "MTN TRANSFER NOT ACCEPTED"
+            )
+
+            print(
+                "status_code:",
+                status_code,
+            )
+
+            print(
+                "response:",
+                response_text,
+            )
+
+            # ------------------------------------------------
+            # MTN DID NOT ACCEPT THE TRANSFER.
+            #
+            # Therefore no wallet deduction.
+            # ------------------------------------------------
+
+            (
+                supabase
+                .table("withdrawals")
+                .update({
+                    "status": "failed",
+                })
+                .eq(
+                    "transaction_id",
+                    transaction_id,
+                )
+                .execute()
+            )
+
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Mobile Money withdrawal was "
+                    "not accepted by MTN."
+                ),
             )
 
         # ====================================================
-        # SAVE MTN TRANSFER REFERENCE
+        # GET MTN REFERENCE
         # ====================================================
 
-        mtn_reference_id = mtn_response.get(
-            "reference_id"
+        mtn_reference_id = (
+            mtn_response.get(
+                "reference_id"
+            )
         )
 
+        if not mtn_reference_id:
+
+            print(
+                "CRITICAL: MTN accepted transfer "
+                "but returned no reference ID."
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "MTN accepted the withdrawal but "
+                    "did not return a transfer reference. "
+                    "The withdrawal requires reconciliation."
+                ),
+            )
+
         # ====================================================
-        # LOG SUCCESS
+        # SAVE MTN REFERENCE
+        #
+        # THIS FIXES:
+        #
+        # mtn_reference_id = null
+        # ====================================================
+
+        reference_update = (
+            supabase
+            .table("withdrawals")
+            .update({
+                "mtn_reference_id":
+                    mtn_reference_id,
+
+                "status":
+                    "processing",
+            })
+            .eq(
+                "transaction_id",
+                transaction_id,
+            )
+            .execute()
+        )
+
+        if not reference_update.data:
+
+            print(
+                "CRITICAL: MTN transfer accepted but "
+                "mtn_reference_id could not be saved."
+            )
+
+            print(
+                "transaction_id:",
+                transaction_id,
+            )
+
+            print(
+                "mtn_reference_id:",
+                mtn_reference_id,
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Mobile Money transfer was accepted, "
+                    "but the MTN reference could not be "
+                    "saved. The withdrawal requires "
+                    "reconciliation."
+                ),
+            )
+
+        # ====================================================
+        # LOG ACCEPTED TRANSFER
         # ====================================================
 
         print(
@@ -828,201 +965,31 @@ async def withdraw(
         )
 
         print(
+            "status: processing",
+        )
+
+        print(
             "================================================"
         )
 
         # ====================================================
-        # CALCULATE NEW BALANCE
-        # ====================================================
-
-        new_balance = (
-            balance
-            - amount
-        )
-
-        # ====================================================
-        # DEDUCT FROM EXACT WALLET
-        # ====================================================
-
-        wallet_update_response = (
-            supabase
-            .table("wallets")
-            .update({
-
-                "balance":
-                    new_balance,
-
-                "updated_at":
-                    datetime.utcnow().isoformat(),
-
-            })
-            .eq(
-                "id",
-                wallet_id,
-            )
-            .eq(
-                "seller_id",
-                seller_id,
-            )
-            .eq(
-                "seller_type",
-                seller_type,
-            )
-            .execute()
-        )
-
-        # ====================================================
-        # VERIFY WALLET WAS ACTUALLY UPDATED
-        # ====================================================
-
-        if not wallet_update_response.data:
-
-            print(
-                "CRITICAL: MTN payout accepted but "
-                "wallet deduction failed."
-            )
-
-            print(
-                "seller_id:",
-                seller_id,
-            )
-
-            print(
-                "seller_type:",
-                seller_type,
-            )
-
-            print(
-                "transaction_id:",
-                transaction_id,
-            )
-
-            print(
-                "mtn_reference_id:",
-                mtn_reference_id,
-            )
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Mobile Money payment was accepted, "
-                    "but the seller wallet could not be "
-                    "updated. The withdrawal requires "
-                    "reconciliation."
-                ),
-            )
-
-        # ====================================================
-        # CREATE SELLER WITHDRAWAL TRANSACTION
-        # ====================================================
-
-        transaction_response = (
-            supabase
-            .table("transactions")
-            .insert({
-
-                "farmer_id": (
-                    seller_id
-                    if seller_type == "farmer"
-                    else None
-                ),
-
-                "seller_id":
-                    seller_id,
-
-                "seller_type":
-                    seller_type,
-
-                "amount":
-                    amount,
-
-                "type":
-                    "debit",
-
-                "status":
-                    "completed",
-
-                "reference_id":
-                    transaction_id,
-
-                "description": (
-                    "Supplier Mobile Money withdrawal"
-                    if seller_type == "supplier"
-                    else
-                    "Farmer Mobile Money withdrawal"
-                ),
-
-                "created_at":
-                    now,
-
-            })
-            .execute()
-        )
-
-        # ====================================================
-        # VERIFY TRANSACTION
-        # ====================================================
-
-        if not transaction_response.data:
-
-            print(
-                "CRITICAL: Wallet deducted but "
-                "withdrawal transaction was not created."
-            )
-
-            print(
-                "seller_id:",
-                seller_id,
-            )
-
-            print(
-                "seller_type:",
-                seller_type,
-            )
-
-            print(
-                "amount:",
-                amount,
-            )
-
-            print(
-                "transaction_id:",
-                transaction_id,
-            )
-
-            print(
-                "mtn_reference_id:",
-                mtn_reference_id,
-            )
-
-        # ====================================================
-        # MARK WITHDRAWAL COMPLETED
-        # ====================================================
-
-        completed_withdrawal = (
-            supabase
-            .table("withdrawals")
-            .update({
-
-                "status":
-                    "completed",
-
-            })
-            .eq(
-                "transaction_id",
-                transaction_id,
-            )
-            .execute()
-        )
-
-        # ====================================================
-        # RETURN SUCCESS
+        # IMPORTANT
+        #
+        # DO NOT DEDUCT THE WALLET HERE.
+        #
+        # HTTP 202 means MTN accepted the request.
+        #
+        # We wait for get_transfer_status().
         # ====================================================
 
         return {
 
             "message":
-                "Withdrawal completed successfully.",
+                "Withdrawal request accepted and is "
+                "being processed by Mobile Money.",
+
+            "status":
+                "processing",
 
             "seller_id":
                 seller_id,
@@ -1043,16 +1010,16 @@ async def withdraw(
                 balance,
 
             "new_balance":
-                new_balance,
+                balance,
+
+            "transaction_id":
+                transaction_id,
 
             "mtn_reference_id":
                 mtn_reference_id,
 
             "withdrawal":
-                completed_withdrawal.data,
-
-            "transaction":
-                transaction_response.data,
+                reference_update.data,
 
         }
 
@@ -1100,6 +1067,808 @@ async def withdraw(
                 "Your wallet balance was not deducted."
             ),
         )
+
+
+# ============================================================
+# CONFIRM WITHDRAWAL STATUS
+#
+# GET /api/marketplace/wallet/withdraw/{transaction_id}/status
+#
+# This endpoint checks the REAL MTN disbursement status.
+#
+# IMPORTANT:
+#
+# The wallet is deducted ONLY when MTN says:
+#
+#     SUCCESSFUL
+#
+# PENDING:
+#
+#     wallet remains unchanged
+#
+# FAILED:
+#
+#     wallet remains unchanged
+# ============================================================
+
+@router.get(
+    "/wallet/withdraw/{transaction_id}/status"
+)
+async def confirm_withdrawal(
+    transaction_id: str,
+):
+
+    # ========================================================
+    # FIND WITHDRAWAL
+    # ========================================================
+
+    withdrawal_response = (
+        supabase
+        .table("withdrawals")
+        .select("*")
+        .eq(
+            "transaction_id",
+            transaction_id,
+        )
+        .limit(1)
+        .execute()
+    )
+
+    if not withdrawal_response.data:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Withdrawal not found.",
+        )
+
+    withdrawal = (
+        withdrawal_response.data[0]
+    )
+
+    # ========================================================
+    # READ CURRENT STATUS
+    # ========================================================
+
+    current_status = (
+        withdrawal.get("status")
+        or ""
+    ).strip().lower()
+
+    # ========================================================
+    # ALREADY COMPLETED
+    #
+    # Prevent duplicate wallet deduction.
+    # ========================================================
+
+    if current_status == "completed":
+
+        return {
+
+            "message":
+                "Withdrawal already completed.",
+
+            "status":
+                "completed",
+
+            "transaction_id":
+                transaction_id,
+
+            "mtn_reference_id":
+                withdrawal.get(
+                    "mtn_reference_id"
+                ),
+
+            "amount":
+                withdrawal.get(
+                    "amount"
+                ),
+
+        }
+
+    # ========================================================
+    # ALREADY FAILED
+    #
+    # Prevent unnecessary repeated processing.
+    # ========================================================
+
+    if current_status == "failed":
+
+        return {
+
+            "message":
+                "Withdrawal has already failed.",
+
+            "status":
+                "failed",
+
+            "transaction_id":
+                transaction_id,
+
+            "mtn_reference_id":
+                withdrawal.get(
+                    "mtn_reference_id"
+                ),
+
+            "amount":
+                withdrawal.get(
+                    "amount"
+                ),
+
+        }
+
+    # ========================================================
+    # GET MTN REFERENCE
+    # ========================================================
+
+    mtn_reference_id = (
+        withdrawal.get(
+            "mtn_reference_id"
+        )
+    )
+
+    if not mtn_reference_id:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Withdrawal is missing its MTN "
+                "transfer reference."
+            ),
+        )
+
+    # ========================================================
+    # ASK MTN FOR REAL TRANSFER STATUS
+    # ========================================================
+
+    try:
+
+        mtn_status = get_transfer_status(
+            mtn_reference_id
+        )
+
+    except Exception as e:
+
+        print(
+            "MTN TRANSFER STATUS CHECK ERROR:",
+            str(e),
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Unable to confirm Mobile Money "
+                "withdrawal status at this time."
+            ),
+        )
+
+    # ========================================================
+    # READ MTN STATUS
+    # ========================================================
+
+    transfer_status = (
+        mtn_status.get("status")
+        or ""
+    ).strip().upper()
+
+    print(
+        "================================================"
+    )
+
+    print(
+        "MTN WITHDRAWAL STATUS CHECK"
+    )
+
+    print(
+        "transaction_id:",
+        transaction_id,
+    )
+
+    print(
+        "mtn_reference_id:",
+        mtn_reference_id,
+    )
+
+    print(
+        "mtn_status:",
+        transfer_status,
+    )
+
+    print(
+        "MTN RESPONSE:",
+        mtn_status,
+    )
+
+    print(
+        "================================================"
+    )
+
+    # ========================================================
+    # MTN FAILED
+    # ========================================================
+
+    if transfer_status in [
+        "FAILED",
+        "FAILURE",
+    ]:
+
+        failed_response = (
+            supabase
+            .table("withdrawals")
+            .update({
+                "status": "failed",
+            })
+            .eq(
+                "transaction_id",
+                transaction_id,
+            )
+            .eq(
+                "status",
+                "processing",
+            )
+            .execute()
+        )
+
+        return {
+
+            "message":
+                "Mobile Money withdrawal failed.",
+
+            "status":
+                "failed",
+
+            "transaction_id":
+                transaction_id,
+
+            "mtn_reference_id":
+                mtn_reference_id,
+
+            "amount":
+                withdrawal.get(
+                    "amount"
+                ),
+
+            "withdrawal":
+                failed_response.data,
+
+            "mtn_response":
+                mtn_status,
+
+        }
+
+    # ========================================================
+    # MTN STILL PROCESSING
+    # ========================================================
+
+    if transfer_status in [
+        "PENDING",
+        "PROCESSING",
+        "ACCEPTED",
+    ]:
+
+        return {
+
+            "message":
+                "Mobile Money withdrawal is still "
+                "being processed.",
+
+            "status":
+                "processing",
+
+            "transaction_id":
+                transaction_id,
+
+            "mtn_reference_id":
+                mtn_reference_id,
+
+            "amount":
+                withdrawal.get(
+                    "amount"
+                ),
+
+            "mtn_response":
+                mtn_status,
+
+        }
+
+    # ========================================================
+    # MTN SUCCESSFUL
+    # ========================================================
+
+    if transfer_status == "SUCCESSFUL":
+
+        # ====================================================
+        # DETERMINE SELLER
+        #
+        # withdrawals currently stores farmer_id.
+        #
+        # For suppliers farmer_id is NULL.
+        #
+        # We therefore need to determine the seller from the
+        # associated transaction.
+        #
+        # First look for an existing transaction.
+        # ====================================================
+
+        existing_transaction = (
+            supabase
+            .table("transactions")
+            .select("*")
+            .eq(
+                "reference_id",
+                transaction_id,
+            )
+            .eq(
+                "type",
+                "debit",
+            )
+            .limit(1)
+            .execute()
+        )
+
+        # ----------------------------------------------------
+        # If a transaction already exists, the withdrawal was
+        # already financially processed.
+        # ----------------------------------------------------
+
+        if existing_transaction.data:
+
+            transaction = (
+                existing_transaction.data[0]
+            )
+
+            completed = (
+                supabase
+                .table("withdrawals")
+                .update({
+                    "status": "completed",
+                })
+                .eq(
+                    "transaction_id",
+                    transaction_id,
+                )
+                .eq(
+                    "status",
+                    "processing",
+                )
+                .execute()
+            )
+
+            return {
+
+                "message":
+                    "Withdrawal was already financially "
+                    "processed.",
+
+                "status":
+                    "completed",
+
+                "transaction_id":
+                    transaction_id,
+
+                "mtn_reference_id":
+                    mtn_reference_id,
+
+                "transaction":
+                    transaction,
+
+                "withdrawal":
+                    completed.data,
+
+            }
+
+        # ====================================================
+        # FIND SELLER USING WALLET
+        #
+        # The withdrawal itself contains the farmer_id for
+        # farmers, but supplier withdrawals have farmer_id NULL.
+        #
+        # We therefore need a reliable seller mapping.
+        #
+        # The safest approach is to locate the wallet whose
+        # seller identity corresponds to the withdrawal.
+        #
+        # Since transaction_id is the MTN external ID, we first
+        # check whether a pending transaction exists.
+        # ====================================================
+
+        farmer_id = withdrawal.get(
+            "farmer_id"
+        )
+
+        # ----------------------------------------------------
+        # FARMER WITHDRAWAL
+        # ----------------------------------------------------
+
+        if farmer_id:
+
+            wallet_response = (
+                supabase
+                .table("wallets")
+                .select("*")
+                .eq(
+                    "seller_id",
+                    farmer_id,
+                )
+                .eq(
+                    "seller_type",
+                    "farmer",
+                )
+                .limit(1)
+                .execute()
+            )
+
+            seller_id = farmer_id
+            seller_type = "farmer"
+
+        # ----------------------------------------------------
+        # SUPPLIER WITHDRAWAL
+        #
+        # IMPORTANT:
+        #
+        # Your current withdrawals table does not contain
+        # seller_id / seller_type.
+        #
+        # Therefore a supplier withdrawal cannot be reliably
+        # mapped back to its supplier using withdrawals alone.
+        #
+        # We handle this by looking for the wallet based on
+        # the mobile number only if your wallets table has a
+        # matching mobile number.
+        #
+        # HOWEVER, your current wallet schema has not shown such
+        # a column.
+        #
+        # Therefore we stop safely rather than deducting the
+        # wrong wallet.
+        # ----------------------------------------------------
+
+        else:
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "MTN confirmed the supplier withdrawal as "
+                    "successful, but the withdrawal record does "
+                    "not contain seller_id/seller_type. "
+                    "The payout requires reconciliation before "
+                    "the supplier wallet can be safely deducted."
+                ),
+            )
+
+        # ====================================================
+        # WALLET MUST EXIST
+        # ====================================================
+
+        if not wallet_response.data:
+
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"{seller_type.capitalize()} "
+                    "wallet not found during withdrawal "
+                    "confirmation."
+                ),
+            )
+
+        wallet = wallet_response.data[0]
+
+        wallet_id = wallet.get(
+            "id"
+        )
+
+        balance = float(
+            wallet.get("balance")
+            or 0
+        )
+
+        amount = float(
+            withdrawal.get("amount")
+            or 0
+        )
+
+        # ====================================================
+        # CHECK BALANCE AGAIN
+        #
+        # Never allow a negative balance.
+        # ====================================================
+
+        if amount > balance:
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "MTN confirmed the withdrawal, but the "
+                    "seller wallet no longer has enough balance "
+                    "to reconcile this withdrawal. Manual "
+                    "reconciliation is required."
+                ),
+            )
+
+        # ====================================================
+        # CALCULATE NEW BALANCE
+        # ====================================================
+
+        new_balance = (
+            balance
+            - amount
+        )
+
+        # ====================================================
+        # DEDUCT EXACT WALLET
+        #
+        # IMPORTANT:
+        #
+        # We also require the current balance to still equal
+        # the balance we read.
+        #
+        # This helps prevent the same withdrawal from being
+        # deducted twice by simultaneous confirmation requests.
+        # ====================================================
+
+        wallet_update_response = (
+            supabase
+            .table("wallets")
+            .update({
+
+                "balance":
+                    new_balance,
+
+                "updated_at":
+                    datetime.utcnow().isoformat(),
+
+            })
+            .eq(
+                "id",
+                wallet_id,
+            )
+            .eq(
+                "seller_id",
+                seller_id,
+            )
+            .eq(
+                "seller_type",
+                seller_type,
+            )
+            .eq(
+                "balance",
+                balance,
+            )
+            .execute()
+        )
+
+        # ====================================================
+        # WALLET UPDATE FAILED
+        # ====================================================
+
+        if not wallet_update_response.data:
+
+            print(
+                "CRITICAL: MTN payout successful but "
+                "wallet deduction failed."
+            )
+
+            print(
+                "transaction_id:",
+                transaction_id,
+            )
+
+            print(
+                "mtn_reference_id:",
+                mtn_reference_id,
+            )
+
+            print(
+                "seller_id:",
+                seller_id,
+            )
+
+            print(
+                "seller_type:",
+                seller_type,
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Mobile Money payout was successful, "
+                    "but the seller wallet could not be "
+                    "updated. Manual reconciliation is "
+                    "required."
+                ),
+            )
+
+        # ====================================================
+        # CREATE DEBIT TRANSACTION
+        # ====================================================
+
+        transaction_response = (
+            supabase
+            .table("transactions")
+            .insert({
+
+                "farmer_id": (
+                    seller_id
+                    if seller_type == "farmer"
+                    else None
+                ),
+
+                "seller_id":
+                    seller_id,
+
+                "seller_type":
+                    seller_type,
+
+                "amount":
+                    amount,
+
+                "type":
+                    "debit",
+
+                "status":
+                    "completed",
+
+                "reference_id":
+                    transaction_id,
+
+                "description": (
+                    "Supplier Mobile Money withdrawal"
+                    if seller_type == "supplier"
+                    else
+                    "Farmer Mobile Money withdrawal"
+                ),
+
+                "created_at":
+                    datetime.utcnow().isoformat(),
+
+            })
+            .execute()
+        )
+
+        # ====================================================
+        # TRANSACTION INSERT FAILED
+        # ====================================================
+
+        if not transaction_response.data:
+
+            print(
+                "CRITICAL: Wallet was deducted after "
+                "successful MTN payout, but debit transaction "
+                "could not be created."
+            )
+
+            print(
+                "transaction_id:",
+                transaction_id,
+            )
+
+            print(
+                "seller_id:",
+                seller_id,
+            )
+
+            print(
+                "seller_type:",
+                seller_type,
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Withdrawal payout was successful and "
+                    "wallet was deducted, but the transaction "
+                    "record could not be created. Manual "
+                    "reconciliation is required."
+                ),
+            )
+
+        # ====================================================
+        # MARK WITHDRAWAL COMPLETED
+        # ====================================================
+
+        completed_withdrawal = (
+            supabase
+            .table("withdrawals")
+            .update({
+
+                "status":
+                    "completed",
+
+            })
+            .eq(
+                "transaction_id",
+                transaction_id,
+            )
+            .eq(
+                "status",
+                "processing",
+            )
+            .execute()
+        )
+
+        # ====================================================
+        # RETURN SUCCESS
+        # ====================================================
+
+        return {
+
+            "message":
+                "Withdrawal completed successfully.",
+
+            "status":
+                "completed",
+
+            "seller_id":
+                seller_id,
+
+            "seller_type":
+                seller_type,
+
+            "amount":
+                amount,
+
+            "mobile_number":
+                withdrawal.get(
+                    "phone_number"
+                ),
+
+            "provider":
+                withdrawal.get(
+                    "provider"
+                ),
+
+            "previous_balance":
+                balance,
+
+            "new_balance":
+                new_balance,
+
+            "transaction_id":
+                transaction_id,
+
+            "mtn_reference_id":
+                mtn_reference_id,
+
+            "withdrawal":
+                completed_withdrawal.data,
+
+            "transaction":
+                transaction_response.data,
+
+            "mtn_response":
+                mtn_status,
+
+        }
+
+    # ========================================================
+    # UNKNOWN MTN STATUS
+    # ========================================================
+
+    return {
+
+        "message":
+            "MTN returned an unrecognized transfer status.",
+
+        "status":
+            "processing",
+
+        "transaction_id":
+            transaction_id,
+
+        "mtn_reference_id":
+            mtn_reference_id,
+
+        "amount":
+            withdrawal.get(
+                "amount"
+            ),
+
+        "mtn_status":
+            transfer_status,
+
+        "mtn_response":
+            mtn_status,
+
+    }
 
 
 # ============================================================
