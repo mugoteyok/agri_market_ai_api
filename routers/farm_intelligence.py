@@ -1013,7 +1013,7 @@ async def get_farm_intelligence(
         "daily": (
             "precipitation_probability_max,"
             "rain_sum,"
-            "reference_evapotranspiration"
+            "et0_fao_evapotranspiration"
         ),
 
         "forecast_days": 2,
@@ -1119,7 +1119,7 @@ async def get_farm_intelligence(
     )
 
     evapotranspiration = daily.get(
-        "reference_evapotranspiration",
+        "et0_fao_evapotranspiration",
         [],
     )
 
