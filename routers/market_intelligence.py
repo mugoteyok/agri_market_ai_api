@@ -26,9 +26,9 @@ router = APIRouter()
 #     p_max_price
 # )
 #
-# Supabase project:
+# Production Supabase project:
 #
-# xmdjdxwsvvdxwizokhgs
+# xemhoptmlaxahdhfevuc
 #
 # ============================================================
 
