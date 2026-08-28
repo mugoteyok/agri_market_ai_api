@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI
 
 from routers.products import router as products_router
@@ -8,6 +9,7 @@ from routers.promotions import router as promotions_router
 from routers.recommendations import router as recommendations_router
 from routers.subscriptions import router as subscriptions_router
 from routers.farm_intelligence import router as farm_intelligence_router
+from routers.market_intelligence import router as market_intelligence_router
 
 
 # ============================================================
@@ -149,6 +151,38 @@ app.include_router(
 
 
 # ============================================================
+# MARKET INTELLIGENCE
+#
+# AI-powered crop price analysis and recommendations
+#
+# Endpoint:
+#
+# GET /api/market-intelligence/{crop_slug}
+#
+# Example:
+#
+# GET /api/market-intelligence/maize
+#     ?current_price=1500
+#     &previous_price=1400
+#     &trend=rising
+#     &supply_pressure=low
+#     &storage_risk=low
+#     &min_price=1100
+#     &max_price=1700
+#
+# This router is registered under /api rather than
+# /api/marketplace because Market Intelligence is an
+# agricultural decision-support service.
+# ============================================================
+
+app.include_router(
+    market_intelligence_router,
+    prefix="/api",
+    tags=["Market Intelligence"]
+)
+
+
+# ============================================================
 # MTN MOBILE MONEY CALLBACK
 #
 # MTN will call this endpoint asynchronously after the
@@ -197,6 +231,7 @@ def home():
             "AI Farm Supply Recommendations",
             "Subscriptions",
             "Farm Intelligence",
+            "Market Intelligence",
             "MTN Mobile Money Callback"
         ]
     }
@@ -230,8 +265,13 @@ def marketplace_health():
 
             "subscriptions": "active",
 
+            "farm_intelligence": "active",
+
+            "market_intelligence": "active",
+
             "mtn_callback": "active"
 
         }
 
     }
+
