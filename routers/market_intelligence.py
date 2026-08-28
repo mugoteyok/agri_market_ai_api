@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, HTTPException, Query
 
 from database import supabase
@@ -10,7 +11,7 @@ router = APIRouter()
 # MARKET INTELLIGENCE
 #
 # GET:
-# /market-intelligence/{crop_slug}
+# /api/market-intelligence/{crop_slug}
 #
 # Calls Supabase RPC:
 #
@@ -24,7 +25,13 @@ router = APIRouter()
 #     p_min_price,
 #     p_max_price
 # )
+#
+# Supabase project:
+#
+# xmdjdxwsvvdxwizokhgs
+#
 # ============================================================
+
 
 @router.get("/market-intelligence/{crop_slug}")
 async def get_market_intelligence(
@@ -154,13 +161,61 @@ async def get_market_intelligence(
 
     except Exception as e:
 
+        # Log the complete error to Render logs
+        print(
+            "============================================================"
+        )
+        print("MARKET INTELLIGENCE RPC ERROR")
+        print(
+            "============================================================"
+        )
+        print(f"Exception type: {type(e).__name__}")
+        print(f"Exception: {str(e)}")
+        print(
+            "============================================================"
+        )
+
         raise HTTPException(
             status_code=500,
-            detail=f"Market intelligence RPC error: {str(e)}"
+            detail={
+                "message": "Market intelligence RPC failed.",
+                "error_type": type(e).__name__,
+                "error": str(e),
+            }
         )
 
     # ========================================================
     # VALIDATE RPC RESPONSE
+    # ========================================================
+
+    if response is None:
+
+        print("MARKET INTELLIGENCE ERROR: response is None")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Market intelligence returned no response."
+        )
+
+    # ========================================================
+    # DEBUG RESPONSE
+    # ========================================================
+
+    print(
+        "============================================================"
+    )
+    print("MARKET INTELLIGENCE RPC RESPONSE")
+    print(
+        "============================================================"
+    )
+    print(f"Response data type: {type(response.data).__name__}")
+    print(f"Response data: {response.data}")
+    print(
+        "============================================================"
+    )
+
+    # ========================================================
+    # VALIDATE DATA
     # ========================================================
 
     if response.data is None:
@@ -173,10 +228,8 @@ async def get_market_intelligence(
     # ========================================================
     # SUPABASE RPC RETURNS JSONB
     #
-    # Therefore response.data should already contain
-    # the JSON object created by:
-    #
-    # JSONB_BUILD_OBJECT(...)
+    # The SQL function uses JSONB_BUILD_OBJECT(), therefore
+    # the Supabase response should already be a Python dict.
     # ========================================================
 
     result = response.data
@@ -185,11 +238,16 @@ async def get_market_intelligence(
 
         raise HTTPException(
             status_code=500,
-            detail="Invalid market intelligence response."
+            detail={
+                "message": "Invalid market intelligence response.",
+                "response_type": type(result).__name__,
+                "response": str(result),
+            }
         )
 
     # ========================================================
-    # RETURN TO FLUTTER
+    # RETURN RESULT TO FLUTTER
     # ========================================================
 
     return result
+
