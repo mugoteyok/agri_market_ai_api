@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from database import supabase
+
+from auth import get_authenticated_user
 
 from schemas.wallet import (
     WalletCreate,
@@ -32,7 +34,21 @@ router = APIRouter()
 @router.get("/wallet/{farmer_id}")
 async def get_wallet(
     farmer_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # --------------------------------------------------------
+    # SECURITY
+    #
+    # The authenticated user can only access their own wallet.
+    # --------------------------------------------------------
+
+    if str(user.id) != str(farmer_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail="You can only access your own wallet.",
+        )
 
     response = (
         supabase
@@ -1903,7 +1919,22 @@ async def confirm_withdrawal(
 @router.get("/transactions/{farmer_id}")
 async def transactions(
     farmer_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # --------------------------------------------------------
+    # SECURITY
+    #
+    # The authenticated user can only access their own
+    # transaction history.
+    # --------------------------------------------------------
+
+    if str(user.id) != str(farmer_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail="You can only access your own transactions.",
+        )
 
     response = (
         supabase
