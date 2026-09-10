@@ -1,7 +1,9 @@
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from database import supabase
+
+from auth import get_authenticated_user
 
 from schemas.product import ProductCreate
 
@@ -29,7 +31,8 @@ router = APIRouter()
 
 @router.post("/products")
 async def create_product(
-    product: ProductCreate
+    product: ProductCreate,
+    user=Depends(get_authenticated_user),
 ):
 
     # ========================================================
@@ -47,6 +50,22 @@ async def create_product(
             status_code=400,
             detail="Seller ID is required"
         )
+
+
+    # ========================================================
+    # VERIFY SELLER OWNERSHIP
+    # ========================================================
+
+    if str(user.id) != str(seller_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only create listings "
+                "for your own account."
+            ),
+        )
+
 
     seller_type = (
         product.seller_type
@@ -767,8 +786,14 @@ async def get_farm_supplies():
             detail=str(e)
 
         )
+```
 
+````
 
+### Part 2 of 2
+
+:::writing{variant="standard" id="74106" title="Product router — Part 2 of 2"}
+```python
 # ============================================================
 # GET FARMER PRODUCTS
 #
@@ -779,8 +804,24 @@ async def get_farm_supplies():
 
 @router.get("/products/farmer/{farmer_id}")
 async def farmer_products(
-    farmer_id: str
+    farmer_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY FARMER OWNERSHIP
+    # ========================================================
+
+    if str(user.id) != str(farmer_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only access "
+                "your own product listings."
+            ),
+        )
+
 
     try:
 
@@ -835,8 +876,24 @@ async def farmer_products(
 
 @router.get("/products/supplier/{supplier_id}")
 async def supplier_products(
-    supplier_id: str
+    supplier_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY SUPPLIER OWNERSHIP
+    # ========================================================
+
+    if str(user.id) != str(supplier_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only access "
+                "your own product listings."
+            ),
+        )
+
 
     try:
 
@@ -946,14 +1003,104 @@ async def get_product(
 # DELETE PRODUCT
 #
 # DELETE /products/{product_id}
+#
+# Only the product owner can delete the listing.
 # ============================================================
 
 @router.delete("/products/{product_id}")
 async def delete_product(
-    product_id: str
+    product_id: str,
+    user=Depends(get_authenticated_user),
 ):
 
     try:
+
+        # ====================================================
+        # GET PRODUCT
+        # ====================================================
+
+        product_response = (
+
+            supabase
+
+            .table("products")
+
+            .select("*")
+
+            .eq(
+                "id",
+                product_id
+            )
+
+            .limit(1)
+
+            .execute()
+
+        )
+
+
+        if not product_response.data:
+
+            raise HTTPException(
+
+                status_code=404,
+
+                detail="Product not found"
+
+            )
+
+
+        product = product_response.data[0]
+
+
+        # ====================================================
+        # DETERMINE PRODUCT OWNER
+        # ====================================================
+
+        owner_id = (
+
+            product.get("seller_id")
+
+            or product.get("farmer_id")
+
+        )
+
+
+        # ====================================================
+        # VERIFY PRODUCT OWNER
+        # ====================================================
+
+        if not owner_id:
+
+            raise HTTPException(
+
+                status_code=500,
+
+                detail=(
+                    "Product owner information "
+                    "is missing."
+                )
+
+            )
+
+
+        if str(user.id) != str(owner_id):
+
+            raise HTTPException(
+
+                status_code=403,
+
+                detail=(
+                    "You can only delete "
+                    "your own product listings."
+                )
+
+            )
+
+
+        # ====================================================
+        # DELETE PRODUCT
+        # ====================================================
 
         response = (
 
@@ -979,7 +1126,7 @@ async def delete_product(
 
                 status_code=404,
 
-                detail="Product not found"
+                detail="Product could not be deleted."
 
             )
 
