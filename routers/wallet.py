@@ -478,6 +478,7 @@ async def credit_wallet(
 @router.post("/wallet/withdraw")
 async def withdraw(
     data: WithdrawalCreate,
+    user=Depends(get_authenticated_user),
 ):
 
     # ========================================================
@@ -493,6 +494,46 @@ async def withdraw(
         data.seller_type
         or "farmer"
     ).strip().lower()
+
+    # ========================================================
+    # VERIFY AUTHENTICATED USER
+    # ========================================================
+    #
+    # The authenticated Supabase user must own the wallet
+    # being used for the withdrawal.
+    #
+    # This prevents:
+    #
+    #   Farmer A -> withdrawing Farmer B's money
+    #   Supplier A -> withdrawing Supplier B's money
+    #
+    # Even if the Flutter request is manually modified,
+    # the backend checks the JWT identity here.
+    # ========================================================
+
+    if seller_type == "farmer":
+
+        if str(user.id) != str(seller_id):
+
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You can only withdraw from "
+                    "your own wallet."
+                ),
+            )
+
+    elif seller_type == "supplier":
+
+        if str(user.id) != str(seller_id):
+
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You can only withdraw from "
+                    "your own wallet."
+                ),
+            )
 
     # ========================================================
     # VALIDATE SELLER ID
@@ -672,7 +713,9 @@ async def withdraw(
     # CONFIRM WALLET PRIMARY KEY
     # ========================================================
 
-    wallet_id = wallet.get("id")
+    wallet_id = wallet.get(
+        "id"
+    )
 
     if not wallet_id:
 
@@ -1097,9 +1140,7 @@ async def withdraw(
                 "Your wallet balance was not deducted."
             ),
         )
-
-
-# ============================================================
+     # ============================================================
 # CONFIRM WITHDRAWAL STATUS
 #
 # GET /api/marketplace/wallet/withdraw/{transaction_id}/status
@@ -1491,7 +1532,6 @@ async def confirm_withdrawal(
         #
         #     farmer
         #     supplier
-        #
         # ====================================================
 
         seller_id = withdrawal.get(
@@ -2019,4 +2059,4 @@ async def seller_transactions(
         .execute()
     )
 
-    return response.data
+    return response.data   
