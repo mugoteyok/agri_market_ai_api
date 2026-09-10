@@ -786,14 +786,14 @@ async def get_farm_supplies():
             detail=str(e)
 
         )
-```
 
-````
 
-### Part 2 of 2
 
-:::writing{variant="standard" id="74106" title="Product router — Part 2 of 2"}
-```python
+
+
+
+
+
 # ============================================================
 # GET FARMER PRODUCTS
 #
