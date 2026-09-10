@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException
+
+from fastapi import APIRouter, HTTPException, Depends
 
 from database import supabase
+
+from auth import get_authenticated_user
 
 from schemas.order import OrderCreate
 from schemas.payment import PaymentRequest
@@ -138,7 +141,28 @@ def settle_order(order_id: str):
 @router.post("/orders")
 async def create_order(
     order: OrderCreate,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY AUTHENTICATED USER
+    #
+    # A buyer may only create an order for their own account.
+    #
+    # This check happens BEFORE the atomic RPC so an
+    # unauthorized user cannot reserve stock using another
+    # user's buyer_id.
+    # ========================================================
+
+    if str(user.id) != str(order.buyer_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only create orders "
+                "for your own account."
+            ),
+        )
 
     # ========================================================
     # VALIDATE QUANTITY
@@ -382,7 +406,22 @@ async def create_order(
 @router.get("/orders/farmer/{farmer_id}")
 async def farmer_orders(
     farmer_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY AUTHENTICATED USER
+    # ========================================================
+
+    if str(user.id) != str(farmer_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only access "
+                "your own farmer orders."
+            ),
+        )
 
     response = (
         supabase
@@ -415,7 +454,22 @@ async def farmer_orders(
 @router.get("/orders/supplier/{supplier_id}")
 async def supplier_orders(
     supplier_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY AUTHENTICATED USER
+    # ========================================================
+
+    if str(user.id) != str(supplier_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only access "
+                "your own supplier orders."
+            ),
+        )
 
     response = (
         supabase
@@ -452,7 +506,22 @@ async def supplier_orders(
 @router.get("/orders/seller/{seller_id}")
 async def seller_orders(
     seller_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY AUTHENTICATED USER
+    # ========================================================
+
+    if str(user.id) != str(seller_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only access "
+                "your own seller orders."
+            ),
+        )
 
     response = (
         supabase
@@ -481,7 +550,22 @@ async def seller_orders(
 @router.get("/orders/buyer/{buyer_id}")
 async def buyer_orders(
     buyer_id: str,
+    user=Depends(get_authenticated_user),
 ):
+
+    # ========================================================
+    # VERIFY AUTHENTICATED USER
+    # ========================================================
+
+    if str(user.id) != str(buyer_id):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only access "
+                "your own buyer orders."
+            ),
+        )
 
     response = (
         supabase
@@ -505,43 +589,20 @@ async def buyer_orders(
 # GET SINGLE ORDER
 #
 # GET /api/marketplace/orders/{order_id}
+#
+# The authenticated user must be either:
+#
+#     buyer
+#       OR
+#     seller
+#
+# for this order.
 # ============================================================
 
 @router.get("/orders/{order_id}")
 async def get_order_details(
     order_id: str,
-):
-
-    response = (
-        supabase
-        .table("orders")
-        .select("*")
-        .eq(
-            "id",
-            order_id,
-        )
-        .execute()
-    )
-
-    if not response.data:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Order not found",
-        )
-
-    return response.data[0]
-
-
-# ============================================================
-# ACCEPT ORDER
-#
-# PUT /api/marketplace/orders/{order_id}/accept
-# ============================================================
-
-@router.put("/orders/{order_id}/accept")
-async def accept_order(
-    order_id: str,
+    user=Depends(get_authenticated_user),
 ):
 
     response = (
@@ -563,6 +624,81 @@ async def accept_order(
         )
 
     order = response.data[0]
+
+    # ========================================================
+    # VERIFY ORDER OWNERSHIP
+    # ========================================================
+
+    buyer_id = order.get(
+        "buyer_id"
+    )
+
+    seller_id = order.get(
+        "seller_id"
+    )
+
+    if str(user.id) not in [
+        str(buyer_id),
+        str(seller_id),
+    ]:
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You are not authorized "
+                "to access this order."
+            ),
+        )
+
+    return order
+    
+# ============================================================
+# ACCEPT ORDER
+#
+# PUT /api/marketplace/orders/{order_id}/accept
+#
+# ONLY THE SELLER WHO OWNS THE ORDER CAN ACCEPT IT.
+# ============================================================
+
+@router.put("/orders/{order_id}/accept")
+async def accept_order(
+    order_id: str,
+    user=Depends(get_authenticated_user),
+):
+
+    response = (
+        supabase
+        .table("orders")
+        .select("*")
+        .eq(
+            "id",
+            order_id,
+        )
+        .execute()
+    )
+
+    if not response.data:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found",
+        )
+
+    order = response.data[0]
+
+    # ========================================================
+    # VERIFY SELLER OWNERSHIP
+    # ========================================================
+
+    if str(user.id) != str(order.get("seller_id")):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the seller can "
+                "accept this order."
+            ),
+        )
 
     # ========================================================
     # PREVENT ACCEPTING INVALID ORDER STATES
@@ -679,8 +815,7 @@ async def accept_order(
 #
 # PUT /api/marketplace/orders/{order_id}/status?status=ready
 #
-# Used by supplier/farmer dashboards to move an order through
-# its processing lifecycle.
+# ONLY THE SELLER WHO OWNS THE ORDER CAN CHANGE ITS STATUS.
 #
 # ORDER FLOW:
 #
@@ -700,6 +835,7 @@ async def accept_order(
 async def update_order_status(
     order_id: str,
     status: str,
+    user=Depends(get_authenticated_user),
 ):
 
     # ========================================================
@@ -755,6 +891,23 @@ async def update_order_status(
         )
 
     order = response.data[0]
+
+    # ========================================================
+    # VERIFY SELLER OWNERSHIP
+    #
+    # This check happens BEFORE any status change or
+    # settlement RPC.
+    # ========================================================
+
+    if str(user.id) != str(order.get("seller_id")):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the seller can "
+                "update this order."
+            ),
+        )
 
     current_status = (
         order.get("order_status")
@@ -818,21 +971,6 @@ async def update_order_status(
 
     # ========================================================
     # COMPLETE ORDER THROUGH SETTLEMENT RPC
-    #
-    # IMPORTANT:
-    #
-    # Do NOT directly update orders here.
-    #
-    # settle_completed_order() atomically:
-    #
-    #   1. verifies payment
-    #   2. verifies order state
-    #   3. identifies seller
-    #   4. credits seller wallet
-    #   5. creates seller transaction
-    #   6. marks order completed
-    #
-    # It is also idempotent.
     # ========================================================
 
     if new_status == "completed":
@@ -1090,29 +1228,11 @@ async def update_order_status(
 
     # ========================================================
     # SELLER SETTLEMENT NOTIFICATION
-    #
-    # IMPORTANT:
-    #
-    # The settlement RPC is the authoritative source for:
-    #
-    #     seller_id
-    #     seller_type
-    #     seller_amount
-    #
-    # Only fall back to the old order data if the RPC does
-    # not return those values.
-    #
-    # Only send this when the order has been completed
-    # through the settlement RPC.
     # ========================================================
 
     if new_status == "completed":
 
         try:
-
-            # ------------------------------------------------
-            # AUTHORITATIVE SELLER INFORMATION
-            # ------------------------------------------------
 
             seller_id = (
                 settlement_result.get(
@@ -1133,10 +1253,6 @@ async def update_order_status(
             )
 
             if seller_id:
-
-                # ------------------------------------------------
-                # AUTHORITATIVE SELLER EARNINGS
-                # ------------------------------------------------
 
                 settlement_amount = (
                     settlement_result.get(
@@ -1217,18 +1333,13 @@ async def update_order_status(
 #
 # PUT /api/marketplace/orders/{order_id}/complete
 #
-# IMPORTANT:
-#
-# The normal lifecycle is:
-#
-# placed -> accepted -> processing -> ready -> completed
-#
-# Completion MUST go through the settlement RPC.
+# ONLY THE SELLER WHO OWNS THE ORDER CAN COMPLETE IT.
 # ============================================================
 
 @router.put("/orders/{order_id}/complete")
 async def complete_order(
     order_id: str,
+    user=Depends(get_authenticated_user),
 ):
 
     # ========================================================
@@ -1256,6 +1367,22 @@ async def complete_order(
     order = response.data[0]
 
     # ========================================================
+    # VERIFY SELLER OWNERSHIP
+    #
+    # This check happens BEFORE settlement.
+    # ========================================================
+
+    if str(user.id) != str(order.get("seller_id")):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the seller can "
+                "complete this order."
+            ),
+        )
+
+    # ========================================================
     # PREVENT INVALID STATES
     # ========================================================
 
@@ -1271,10 +1398,6 @@ async def complete_order(
 
     # ========================================================
     # ALREADY COMPLETED
-    #
-    # Because the settlement RPC is idempotent, we can safely
-    # call it again if necessary. However, we report that the
-    # order was already completed.
     # ========================================================
 
     already_completed = (
@@ -1298,16 +1421,6 @@ async def complete_order(
 
     # ========================================================
     # SETTLE ORDER
-    #
-    # PostgreSQL atomically handles:
-    #
-    # seller wallet credit
-    # +
-    # seller transaction
-    # +
-    # order completion
-    #
-    # The RPC is idempotent.
     # ========================================================
 
     settlement_result = settle_order(
@@ -1421,24 +1534,9 @@ async def complete_order(
 
     # ========================================================
     # SELLER SETTLEMENT NOTIFICATION
-    #
-    # IMPORTANT:
-    #
-    # Use settlement_result as the authoritative source for:
-    #
-    #     seller_id
-    #     seller_type
-    #     seller_amount
-    #
-    # This ensures the seller notification matches the seller
-    # and amount actually processed by the settlement RPC.
     # ========================================================
 
     try:
-
-        # ----------------------------------------------------
-        # AUTHORITATIVE SELLER INFORMATION
-        # ----------------------------------------------------
 
         seller_id = (
             settlement_result.get(
@@ -1459,10 +1557,6 @@ async def complete_order(
         )
 
         if seller_id:
-
-            # ------------------------------------------------
-            # AUTHORITATIVE SELLER EARNINGS
-            # ------------------------------------------------
 
             settlement_amount = (
                 settlement_result.get(
@@ -1592,11 +1686,14 @@ async def complete_order(
 # CANCEL ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/cancel
+#
+# BUYER OR SELLER INVOLVED IN THE ORDER MAY CANCEL IT.
 # ============================================================
 
 @router.put("/orders/{order_id}/cancel")
 async def cancel_order(
     order_id: str,
+    user=Depends(get_authenticated_user),
 ):
 
     response = (
@@ -1618,6 +1715,34 @@ async def cancel_order(
         )
 
     order = response.data[0]
+
+    # ========================================================
+    # VERIFY ORDER AUTHORIZATION
+    #
+    # Only the buyer or seller associated with this order
+    # may cancel it.
+    # ========================================================
+
+    buyer_id = order.get(
+        "buyer_id"
+    )
+
+    seller_id = order.get(
+        "seller_id"
+    )
+
+    if str(user.id) not in [
+        str(buyer_id),
+        str(seller_id),
+    ]:
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You are not authorized "
+                "to cancel this order."
+            ),
+        )
 
     # ========================================================
     # PREVENT CANCELLING COMPLETED ORDER
@@ -1816,6 +1941,8 @@ async def cancel_order(
 #
 # POST /api/marketplace/orders/{order_id}/payment
 #
+# ONLY THE BUYER WHO OWNS THE ORDER CAN INITIATE PAYMENT.
+#
 # MTN RequestToPay is asynchronous.
 #
 # This endpoint ONLY initiates the payment.
@@ -1825,6 +1952,7 @@ async def cancel_order(
 async def pay_order(
     order_id: str,
     payment: PaymentRequest,
+    user=Depends(get_authenticated_user),
 ):
 
     # ========================================================
@@ -1850,6 +1978,22 @@ async def pay_order(
         )
 
     order = order_response.data[0]
+
+    # ========================================================
+    # VERIFY BUYER OWNERSHIP
+    #
+    # This happens BEFORE any Mobile Money request.
+    # ========================================================
+
+    if str(user.id) != str(order.get("buyer_id")):
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the buyer can "
+                "pay for this order."
+            ),
+        )
 
     # ========================================================
     # PREVENT DOUBLE PAYMENT
@@ -2237,6 +2381,9 @@ async def pay_order(
 #
 # GET /api/marketplace/orders/{order_id}/payment-status
 #
+# ONLY THE BUYER OR SELLER ASSOCIATED WITH THE ORDER MAY
+# CHECK ITS PAYMENT STATUS.
+#
 # SUCCESSFUL -> paid
 #
 # FAILED / REJECTED:
@@ -2253,6 +2400,7 @@ async def pay_order(
 )
 async def check_payment_status(
     order_id: str,
+    user=Depends(get_authenticated_user),
 ):
 
     # ========================================================
@@ -2278,6 +2426,35 @@ async def check_payment_status(
         )
 
     order = order_response.data[0]
+
+    # ========================================================
+    # VERIFY ORDER AUTHORIZATION
+    #
+    # The buyer and seller may check the payment status.
+    # An unrelated authenticated user may not query MTN
+    # for this order.
+    # ========================================================
+
+    buyer_id = order.get(
+        "buyer_id"
+    )
+
+    seller_id = order.get(
+        "seller_id"
+    )
+
+    if str(user.id) not in [
+        str(buyer_id),
+        str(seller_id),
+    ]:
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You are not authorized "
+                "to check this payment."
+            ),
+        )
 
     # ========================================================
     # ALREADY PAID
@@ -2349,8 +2526,7 @@ async def check_payment_status(
         str(
             mtn_status.get("status")
             or ""
-        )
-        .upper()
+        ).upper()
     )
 
     # ========================================================
@@ -2722,3 +2898,5 @@ async def check_payment_status(
                 "still being processed."
             ),
     }
+
+
