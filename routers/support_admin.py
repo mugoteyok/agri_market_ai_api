@@ -849,7 +849,10 @@ async def create_support_agent(
         try:
             invite_response = (
                 supabase.auth.admin.invite_user_by_email(
-                    email
+                    email,
+    options={
+        "redirect_to": "http://localhost:5173",
+    },
                 )
             )
         except Exception as e:
