@@ -115,7 +115,7 @@ MTN_CALLBACK_URL = os.getenv(
 
 MTN_CURRENCY = os.getenv(
     "MTN_CURRENCY",
-    "UGX"
+    "EUR"
 )
 
 
