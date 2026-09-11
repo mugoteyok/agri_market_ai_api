@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -159,6 +158,11 @@ class CreateSupportAgent(BaseModel):
         min_length=1,
         max_length=30,
     )
+
+
+class UpdateSupportAgent(BaseModel):
+    agent_role: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 # ============================================================
@@ -974,6 +978,168 @@ async def create_support_agent(
 
 
 # ============================================================
+# UPDATE SUPPORT STAFF
+# ============================================================
+
+@router.patch("/agents/{agent_id}")
+async def update_support_agent(
+    agent_id: str,
+    payload: UpdateSupportAgent,
+    agent=Depends(get_support_agent),
+):
+    """
+    Update a support staff member's role or active status.
+
+    Only administrators can manage support staff.
+    """
+
+    require_admin_role(agent)
+
+    if (
+        payload.agent_role is None
+        and payload.is_active is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="No staff changes supplied.",
+        )
+
+    requested_role = None
+
+    if payload.agent_role is not None:
+        requested_role = (
+            payload.agent_role
+            .strip()
+            .lower()
+        )
+
+        if requested_role not in VALID_AGENT_ROLES:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid support staff role.",
+            )
+
+    try:
+        # =====================================================
+        # LOAD TARGET STAFF MEMBER
+        # =====================================================
+
+        existing_response = (
+            supabase
+            .from_("support_agents")
+            .select(
+                "id,user_id,display_name,email,agent_role,is_active,created_at"
+            )
+            .eq(
+                "id",
+                agent_id,
+            )
+            .maybe_single()
+            .execute()
+        )
+
+        existing_agent = existing_response.data
+
+        if not existing_agent:
+            raise HTTPException(
+                status_code=404,
+                detail="Support staff member not found.",
+            )
+
+        # =====================================================
+        # PREVENT ADMIN FROM LOCKING THEMSELVES OUT
+        # =====================================================
+
+        current_user_id = agent.get("user_id")
+        target_user_id = existing_agent.get("user_id")
+
+        if current_user_id == target_user_id:
+            if (
+                payload.is_active is False
+                or (
+                    requested_role is not None
+                    and requested_role != "admin"
+                )
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "You cannot deactivate or remove "
+                        "administrator access from your own account."
+                    ),
+                )
+
+        # =====================================================
+        # BUILD UPDATE
+        # =====================================================
+
+        updates = {}
+
+        if requested_role is not None:
+            updates["agent_role"] = requested_role
+
+        if payload.is_active is not None:
+            updates["is_active"] = payload.is_active
+
+        # =====================================================
+        # UPDATE SUPPORT AGENT
+        # =====================================================
+
+        response = (
+            supabase
+            .from_("support_agents")
+            .update(updates)
+            .eq(
+                "id",
+                agent_id,
+            )
+            .execute()
+        )
+
+        updated_agents = (
+            response.data or []
+        )
+
+        updated_agent = (
+            updated_agents[0]
+            if updated_agents
+            else None
+        )
+
+        if not updated_agent:
+            raise HTTPException(
+                status_code=500,
+                detail="Support staff update was not completed.",
+            )
+
+        print(
+            "SUPPORT AGENT UPDATED:",
+            updated_agent,
+        )
+
+        return {
+            "message": (
+                "Support staff updated successfully."
+            ),
+            "agent": updated_agent,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print(
+            "UPDATE SUPPORT AGENT ERROR:",
+            str(e),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to update support staff.",
+        )
+
+
+# ============================================================
 # SUPPORT CUSTOMERS
 # ============================================================
 
@@ -1210,4 +1376,3 @@ async def get_support_customers(
             status_code=500,
             detail="Unable to load support customers.",
         )
-
