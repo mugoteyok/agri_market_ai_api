@@ -1,5 +1,6 @@
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from routers.products import router as products_router
 from routers.orders import router as orders_router
@@ -33,6 +34,27 @@ app = FastAPI(
         "price forecasting and farmer payments"
     ),
     version="1.0.0"
+)
+
+
+# ============================================================
+# CORS
+#
+# Allows the local web support portal to communicate with
+# the API from the browser.
+#
+# This does not change the existing Flutter/mobile API
+# functionality.
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
