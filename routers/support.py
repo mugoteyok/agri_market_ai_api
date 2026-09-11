@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, HTTPException
 from database import supabase
 from auth import get_authenticated_user
@@ -262,6 +261,12 @@ async def create_support_ticket(
 
     # --------------------------------------------------------
     # CREATE TICKET
+    #
+    # IMPORTANT:
+    # Do NOT use .single().
+    #
+    # The installed Supabase Python client does not expose
+    # .single() on this SyncQueryRequestBuilder.
     # --------------------------------------------------------
 
     try:
@@ -291,17 +296,18 @@ async def create_support_ticket(
                 closed_at
                 """
             )
-            .single()
             .execute()
         )
 
-        ticket = ticket_response.data
+        ticket_data = ticket_response.data or []
 
-        if not ticket:
+        if not ticket_data:
             raise HTTPException(
                 status_code=500,
                 detail="Unable to create support ticket.",
             )
+
+        ticket = ticket_data[0]
 
     except HTTPException:
         raise
@@ -319,6 +325,9 @@ async def create_support_ticket(
 
     # --------------------------------------------------------
     # CREATE FIRST MESSAGE
+    #
+    # IMPORTANT:
+    # Do NOT use .single().
     # --------------------------------------------------------
 
     try:
@@ -343,11 +352,17 @@ async def create_support_ticket(
                 is_internal
                 """
             )
-            .single()
             .execute()
         )
 
-        first_message = message_response.data
+        message_data = message_response.data or []
+
+        if not message_data:
+            raise Exception(
+                "Support ticket message was not created."
+            )
+
+        first_message = message_data[0]
 
     except Exception as e:
         print(
@@ -360,12 +375,15 @@ async def create_support_ticket(
         # ----------------------------------------------------
 
         try:
-            supabase \
-                .from_("support_tickets") \
-                .delete() \
-                .eq("id", ticket["id"]) \
-                .eq("user_id", user_id) \
+            (
+                supabase
+                .from_("support_tickets")
+                .delete()
+                .eq("id", ticket["id"])
+                .eq("user_id", user_id)
                 .execute()
+            )
+
         except Exception as cleanup_error:
             print(
                 "SUPPORT TICKET CLEANUP ERROR:",
@@ -651,6 +669,9 @@ async def add_support_message(
 
     # --------------------------------------------------------
     # CREATE MESSAGE
+    #
+    # IMPORTANT:
+    # Do NOT use .single().
     # --------------------------------------------------------
 
     try:
@@ -675,11 +696,17 @@ async def add_support_message(
                 is_internal
                 """
             )
-            .single()
             .execute()
         )
 
-        created_message = response.data
+        message_data = response.data or []
+
+        if not message_data:
+            raise Exception(
+                "Support message was not created."
+            )
+
+        created_message = message_data[0]
 
     except Exception as e:
         print(
@@ -696,4 +723,3 @@ async def add_support_message(
         "success": True,
         "message": created_message,
     }
-
