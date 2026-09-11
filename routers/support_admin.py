@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -512,6 +511,14 @@ async def send_support_reply(
                 detail="Closed tickets cannot receive new messages.",
             )
 
+        # ----------------------------------------------------
+        # Insert the support message.
+        #
+        # Do NOT use .single() here. The installed Supabase
+        # Python client does not expose .single() on this
+        # query builder.
+        # ----------------------------------------------------
+
         insert_response = (
             supabase
             .from_("support_messages")
@@ -522,13 +529,27 @@ async def send_support_reply(
                 "message": message,
                 "is_internal": False,
             })
-            .select()
-            .single()
             .execute()
         )
 
+        inserted_messages = (
+            insert_response.data or []
+        )
+
+        inserted_message = (
+            inserted_messages[0]
+            if inserted_messages
+            else None
+        )
+
+        if not inserted_message:
+            raise HTTPException(
+                status_code=500,
+                detail="Support message was not created.",
+            )
+
         return {
-            "message": insert_response.data,
+            "message": inserted_message,
         }
 
     except HTTPException:
@@ -622,6 +643,13 @@ async def update_support_ticket(
                 detail="Support ticket not found.",
             )
 
+        # ----------------------------------------------------
+        # Update the ticket.
+        #
+        # Do NOT use .single() here for the same reason as the
+        # support message insert above.
+        # ----------------------------------------------------
+
         response = (
             supabase
             .from_("support_tickets")
@@ -630,13 +658,27 @@ async def update_support_ticket(
                 "id",
                 ticket_id,
             )
-            .select()
-            .single()
             .execute()
         )
 
+        updated_tickets = (
+            response.data or []
+        )
+
+        updated_ticket = (
+            updated_tickets[0]
+            if updated_tickets
+            else None
+        )
+
+        if not updated_ticket:
+            raise HTTPException(
+                status_code=500,
+                detail="Ticket update was not completed.",
+            )
+
         return {
-            "ticket": response.data,
+            "ticket": updated_ticket,
         }
 
     except HTTPException:
@@ -702,4 +744,3 @@ async def get_support_agents(
             status_code=500,
             detail="Unable to load support agents.",
         )
-
