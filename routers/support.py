@@ -4,6 +4,10 @@ from database import supabase
 from auth import get_authenticated_user
 
 
+# ============================================================
+# ROUTER
+# ============================================================
+
 router = APIRouter(
     prefix="/api/support",
     tags=["Customer Support"],
@@ -11,7 +15,7 @@ router = APIRouter(
 
 
 # ============================================================
-# HELPERS
+# CONSTANTS
 # ============================================================
 
 ALLOWED_CUSTOMER_ROLES = {
@@ -21,41 +25,13 @@ ALLOWED_CUSTOMER_ROLES = {
 }
 
 
-def get_user_role(user) -> str:
-    """
-    Get the application role for the authenticated user.
-
-    The role is expected to be stored in Supabase user metadata.
-    """
-
-    metadata = user.user_metadata or {}
-
-    role = (
-        metadata.get("role")
-        or metadata.get("user_role")
-        or metadata.get("account_type")
-    )
-
-    if not role:
-        raise HTTPException(
-            status_code=403,
-            detail="User role is not available.",
-        )
-
-    role = str(role).strip().lower()
-
-    if role not in ALLOWED_CUSTOMER_ROLES:
-        raise HTTPException(
-            status_code=403,
-            detail="This account is not allowed to use customer support.",
-        )
-
-    return role
-
+# ============================================================
+# AUTHENTICATION / USER HELPERS
+# ============================================================
 
 def get_user_id(user) -> str:
     """
-    Return the authenticated Supabase user ID.
+    Get the authenticated Supabase user's ID.
     """
 
     user_id = getattr(user, "id", None)
@@ -69,6 +45,62 @@ def get_user_id(user) -> str:
     return str(user_id)
 
 
+def get_user_role(user) -> str:
+    """
+    Get the user's role from the profiles table.
+
+    profiles.id = auth.users.id
+
+    This is the application's source of truth for roles.
+    """
+
+    user_id = get_user_id(user)
+
+    try:
+        response = (
+            supabase
+            .from_("profiles")
+            .select("role")
+            .eq("id", user_id)
+            .maybe_single()
+            .execute()
+        )
+
+        profile = response.data
+
+    except Exception as e:
+        print(
+            "SUPPORT ROLE LOOKUP ERROR:",
+            str(e),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to verify user role.",
+        )
+
+    if not profile or not profile.get("role"):
+        raise HTTPException(
+            status_code=403,
+            detail="User role is not available.",
+        )
+
+    role = str(
+        profile["role"]
+    ).strip().lower()
+
+    if role not in ALLOWED_CUSTOMER_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This account is not allowed "
+                "to use customer support."
+            ),
+        )
+
+    return role
+
+
 # ============================================================
 # GET SUPPORT CATEGORIES
 # ============================================================
@@ -79,16 +111,17 @@ async def get_support_categories(
 ):
     """
     Return active customer support categories.
+
+    Available to authenticated farmers, suppliers,
+    and agricultural businesses.
     """
 
-    # Confirm the authenticated account is an allowed
-    # customer account.
     get_user_role(user)
 
     try:
         response = (
             supabase
-            .table("support_categories")
+            .from_("support_categories")
             .select(
                 "id,name,description,is_active,created_at"
             )
@@ -110,7 +143,7 @@ async def get_support_categories(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to load support categories.",
+            detail="Unable to load support categories.",
         )
 
 
@@ -124,125 +157,151 @@ async def create_support_ticket(
     user=Depends(get_authenticated_user),
 ):
     """
-    Create a new support ticket for the authenticated user.
+    Create a customer support ticket.
+
+    The authenticated user's ID and role are always taken
+    from the authenticated session / profiles table.
+
+    The client cannot choose another user's ID or role.
     """
 
     user_id = get_user_id(user)
     user_role = get_user_role(user)
 
-    subject = payload.get("subject")
+    subject = str(
+        payload.get("subject", "")
+    ).strip()
+
+    message = str(
+        payload.get("message", "")
+    ).strip()
+
     category_id = payload.get("category_id")
-    message = payload.get("message")
+
+    priority = str(
+        payload.get("priority", "normal")
+    ).strip().lower()
+
+    channel = str(
+        payload.get("channel", "app")
+    ).strip().lower()
+
+    # --------------------------------------------------------
+    # VALIDATION
+    # --------------------------------------------------------
 
     if not subject:
         raise HTTPException(
             status_code=400,
-            detail="Subject is required.",
-        )
-
-    if not str(subject).strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Subject cannot be empty.",
+            detail="Support ticket subject is required.",
         )
 
     if not message:
         raise HTTPException(
             status_code=400,
-            detail="Message is required.",
+            detail="Support ticket message is required.",
         )
 
-    if not str(message).strip():
+    if priority not in {
+        "low",
+        "normal",
+        "high",
+        "urgent",
+    }:
         raise HTTPException(
             status_code=400,
-            detail="Message cannot be empty.",
+            detail="Invalid support ticket priority.",
         )
 
-    try:
-        # ========================================================
-        # VERIFY CATEGORY
-        # ========================================================
+    if channel not in {
+        "app",
+        "whatsapp",
+        "email",
+        "website",
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid support ticket channel.",
+        )
 
-        category = None
+    # --------------------------------------------------------
+    # OPTIONAL CATEGORY VALIDATION
+    # --------------------------------------------------------
 
-        if category_id:
+    if category_id:
+        try:
             category_response = (
                 supabase
-                .table("support_categories")
-                .select("id,name,is_active")
+                .from_("support_categories")
+                .select("id")
                 .eq("id", category_id)
                 .eq("is_active", True)
                 .maybe_single()
                 .execute()
             )
 
-            category = category_response.data
-
-            if not category:
+            if not category_response.data:
                 raise HTTPException(
                     status_code=400,
                     detail="Invalid or inactive support category.",
                 )
 
-        # ========================================================
-        # CREATE TICKET
-        # ========================================================
+        except HTTPException:
+            raise
 
+        except Exception as e:
+            print(
+                "SUPPORT CATEGORY VALIDATION ERROR:",
+                str(e),
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to validate support category.",
+            )
+
+    # --------------------------------------------------------
+    # CREATE TICKET
+    # --------------------------------------------------------
+
+    try:
         ticket_response = (
             supabase
-            .table("support_tickets")
-            .insert(
-                {
-                    "user_id": user_id,
-                    "user_role": user_role,
-                    "category_id": category_id,
-                    "subject": str(subject).strip(),
-                    "status": "open",
-                    "priority": "normal",
-                    "channel": "app",
-                }
+            .from_("support_tickets")
+            .insert({
+                "user_id": user_id,
+                "user_role": user_role,
+                "category_id": category_id,
+                "subject": subject,
+                "priority": priority,
+                "channel": channel,
+            })
+            .select(
+                """
+                id,
+                user_id,
+                user_role,
+                category_id,
+                subject,
+                status,
+                priority,
+                channel,
+                created_at,
+                updated_at,
+                closed_at
+                """
             )
+            .single()
             .execute()
         )
 
-        if not ticket_response.data:
+        ticket = ticket_response.data
+
+        if not ticket:
             raise HTTPException(
                 status_code=500,
-                detail="Failed to create support ticket.",
+                detail="Unable to create support ticket.",
             )
-
-        ticket = ticket_response.data[0]
-
-        # ========================================================
-        # CREATE FIRST MESSAGE
-        # ========================================================
-
-        message_response = (
-            supabase
-            .table("support_messages")
-            .insert(
-                {
-                    "ticket_id": ticket["id"],
-                    "sender_id": user_id,
-                    "sender_role": user_role,
-                    "message": str(message).strip(),
-                    "is_internal": False,
-                }
-            )
-            .execute()
-        )
-
-        if not message_response.data:
-            raise HTTPException(
-                status_code=500,
-                detail="Ticket was created but the initial message failed.",
-            )
-
-        return {
-            "success": True,
-            "ticket": ticket,
-            "message": message_response.data[0],
-        }
 
     except HTTPException:
         raise
@@ -255,8 +314,74 @@ async def create_support_ticket(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to create support ticket.",
+            detail="Unable to create support ticket.",
         )
+
+    # --------------------------------------------------------
+    # CREATE FIRST MESSAGE
+    # --------------------------------------------------------
+
+    try:
+        message_response = (
+            supabase
+            .from_("support_messages")
+            .insert({
+                "ticket_id": ticket["id"],
+                "sender_id": user_id,
+                "sender_role": user_role,
+                "message": message,
+                "is_internal": False,
+            })
+            .select(
+                """
+                id,
+                ticket_id,
+                sender_id,
+                sender_role,
+                message,
+                created_at,
+                is_internal
+                """
+            )
+            .single()
+            .execute()
+        )
+
+        first_message = message_response.data
+
+    except Exception as e:
+        print(
+            "CREATE SUPPORT MESSAGE ERROR:",
+            str(e),
+        )
+
+        # ----------------------------------------------------
+        # CLEAN UP TICKET IF FIRST MESSAGE FAILED
+        # ----------------------------------------------------
+
+        try:
+            supabase \
+                .from_("support_tickets") \
+                .delete() \
+                .eq("id", ticket["id"]) \
+                .eq("user_id", user_id) \
+                .execute()
+        except Exception as cleanup_error:
+            print(
+                "SUPPORT TICKET CLEANUP ERROR:",
+                str(cleanup_error),
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create support ticket message.",
+        )
+
+    return {
+        "success": True,
+        "ticket": ticket,
+        "message": first_message,
+    }
 
 
 # ============================================================
@@ -268,16 +393,18 @@ async def get_my_support_tickets(
     user=Depends(get_authenticated_user),
 ):
     """
-    Return support tickets belonging to the authenticated user.
+    Return support tickets belonging only to the
+    authenticated user.
     """
 
     user_id = get_user_id(user)
+
     get_user_role(user)
 
     try:
         response = (
             supabase
-            .table("support_tickets")
+            .from_("support_tickets")
             .select(
                 """
                 id,
@@ -291,7 +418,7 @@ async def get_my_support_tickets(
                 created_at,
                 updated_at,
                 closed_at,
-                support_categories (
+                support_categories(
                     id,
                     name,
                     description
@@ -299,7 +426,10 @@ async def get_my_support_tickets(
                 """
             )
             .eq("user_id", user_id)
-            .order("created_at", desc=True)
+            .order(
+                "created_at",
+                desc=True,
+            )
             .execute()
         )
 
@@ -316,12 +446,12 @@ async def get_my_support_tickets(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to load support tickets.",
+            detail="Unable to load support tickets.",
         )
 
 
 # ============================================================
-# GET SINGLE SUPPORT TICKET
+# GET ONE SUPPORT TICKET
 # ============================================================
 
 @router.get("/tickets/{ticket_id}")
@@ -330,22 +460,23 @@ async def get_support_ticket(
     user=Depends(get_authenticated_user),
 ):
     """
-    Return one ticket and its messages.
+    Return one support ticket and its messages.
 
-    Only the owner of the ticket can access it.
+    A user can only access their own ticket.
     """
 
     user_id = get_user_id(user)
+
     get_user_role(user)
 
-    try:
-        # ========================================================
-        # LOAD TICKET
-        # ========================================================
+    # --------------------------------------------------------
+    # GET TICKET
+    # --------------------------------------------------------
 
+    try:
         ticket_response = (
             supabase
-            .table("support_tickets")
+            .from_("support_tickets")
             .select(
                 """
                 id,
@@ -359,7 +490,7 @@ async def get_support_ticket(
                 created_at,
                 updated_at,
                 closed_at,
-                support_categories (
+                support_categories(
                     id,
                     name,
                     description
@@ -374,19 +505,31 @@ async def get_support_ticket(
 
         ticket = ticket_response.data
 
-        if not ticket:
-            raise HTTPException(
-                status_code=404,
-                detail="Support ticket not found.",
-            )
+    except Exception as e:
+        print(
+            "GET SUPPORT TICKET ERROR:",
+            str(e),
+        )
 
-        # ========================================================
-        # LOAD MESSAGES
-        # ========================================================
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load support ticket.",
+        )
 
+    if not ticket:
+        raise HTTPException(
+            status_code=404,
+            detail="Support ticket not found.",
+        )
+
+    # --------------------------------------------------------
+    # GET MESSAGES
+    # --------------------------------------------------------
+
+    try:
         messages_response = (
             supabase
-            .table("support_messages")
+            .from_("support_messages")
             .select(
                 """
                 id,
@@ -400,29 +543,31 @@ async def get_support_ticket(
             )
             .eq("ticket_id", ticket_id)
             .eq("is_internal", False)
-            .order("created_at")
+            .order(
+                "created_at",
+                desc=False,
+            )
             .execute()
         )
 
-        return {
-            "success": True,
-            "ticket": ticket,
-            "messages": messages_response.data or [],
-        }
-
-    except HTTPException:
-        raise
+        messages = messages_response.data or []
 
     except Exception as e:
         print(
-            "GET SUPPORT TICKET ERROR:",
+            "GET SUPPORT MESSAGES ERROR:",
             str(e),
         )
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to load support ticket.",
+            detail="Unable to load support messages.",
         )
+
+    return {
+        "success": True,
+        "ticket": ticket,
+        "messages": messages,
+    }
 
 
 # ============================================================
@@ -437,35 +582,37 @@ async def add_support_message(
 ):
     """
     Add a customer message to an existing support ticket.
+
+    The authenticated user must own the ticket.
     """
 
     user_id = get_user_id(user)
     user_role = get_user_role(user)
 
-    message = payload.get("message")
+    message = str(
+        payload.get("message", "")
+    ).strip()
 
     if not message:
         raise HTTPException(
             status_code=400,
-            detail="Message is required.",
+            detail="Support message is required.",
         )
 
-    if not str(message).strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Message cannot be empty.",
-        )
+    # --------------------------------------------------------
+    # VERIFY TICKET OWNERSHIP
+    # --------------------------------------------------------
 
     try:
-        # ========================================================
-        # VERIFY TICKET OWNERSHIP
-        # ========================================================
-
         ticket_response = (
             supabase
-            .table("support_tickets")
+            .from_("support_tickets")
             .select(
-                "id,user_id,status"
+                """
+                id,
+                user_id,
+                status
+                """
             )
             .eq("id", ticket_id)
             .eq("user_id", user_id)
@@ -475,71 +622,64 @@ async def add_support_message(
 
         ticket = ticket_response.data
 
-        if not ticket:
-            raise HTTPException(
-                status_code=404,
-                detail="Support ticket not found.",
-            )
+    except Exception as e:
+        print(
+            "SUPPORT TICKET OWNERSHIP ERROR:",
+            str(e),
+        )
 
-        # ========================================================
-        # PREVENT MESSAGES ON CLOSED TICKETS
-        # ========================================================
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to verify support ticket.",
+        )
 
-        if ticket["status"] == "closed":
-            raise HTTPException(
-                status_code=400,
-                detail="This support ticket is closed.",
-            )
+    if not ticket:
+        raise HTTPException(
+            status_code=404,
+            detail="Support ticket not found.",
+        )
 
-        # ========================================================
-        # INSERT CUSTOMER MESSAGE
-        # ========================================================
+    # --------------------------------------------------------
+    # PREVENT MESSAGES ON CLOSED TICKETS
+    # --------------------------------------------------------
 
+    if ticket.get("status") == "closed":
+        raise HTTPException(
+            status_code=400,
+            detail="This support ticket is closed.",
+        )
+
+    # --------------------------------------------------------
+    # CREATE MESSAGE
+    # --------------------------------------------------------
+
+    try:
         response = (
             supabase
-            .table("support_messages")
-            .insert(
-                {
-                    "ticket_id": ticket_id,
-                    "sender_id": user_id,
-                    "sender_role": user_role,
-                    "message": str(message).strip(),
-                    "is_internal": False,
-                }
+            .from_("support_messages")
+            .insert({
+                "ticket_id": ticket_id,
+                "sender_id": user_id,
+                "sender_role": user_role,
+                "message": message,
+                "is_internal": False,
+            })
+            .select(
+                """
+                id,
+                ticket_id,
+                sender_id,
+                sender_role,
+                message,
+                created_at,
+                is_internal
+                """
             )
+            .single()
             .execute()
         )
 
-        if not response.data:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to send support message.",
-            )
-
-        # ========================================================
-        # UPDATE TICKET
-        # ========================================================
-
-        (
-            supabase
-            .table("support_tickets")
-            .update(
-                {
-                    "status": "open",
-                }
-            )
-            .eq("id", ticket_id)
-            .eq("user_id", user_id)
-            .execute()
-        )
-
-        return {
-            "success": True,
-            "message": response.data[0],
-        }
-
-    except HTTPException:
-        raise
+        created_message = response.data
 
     except Exception as e:
         print(
@@ -549,6 +689,11 @@ async def add_support_message(
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to send support message.",
+            detail="Unable to add support message.",
         )
+
+    return {
+        "success": True,
+        "message": created_message,
+    }
 
