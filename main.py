@@ -11,6 +11,7 @@ from routers.subscriptions import router as subscriptions_router
 from routers.farm_intelligence import router as farm_intelligence_router
 from routers.market_intelligence import router as market_intelligence_router
 from routers.support import router as support_router
+from routers.support_admin import router as support_admin_router
 
 
 # ============================================================
@@ -231,6 +232,33 @@ app.include_router(
 app.include_router(
     support_router,
     tags=["Customer Support"]
+)
+
+
+# ============================================================
+# SUPPORT ADMINISTRATION
+#
+# Internal customer support administration portal.
+#
+# These endpoints are protected by support-agent
+# authentication inside support_admin.py.
+#
+# Endpoints:
+#
+# GET    /api/support/admin/stats
+# GET    /api/support/admin/tickets
+# GET    /api/support/admin/tickets/{ticket_id}
+# POST   /api/support/admin/tickets/{ticket_id}/messages
+# PATCH  /api/support/admin/tickets/{ticket_id}
+# GET    /api/support/admin/agents
+#
+# This router is intentionally separate from the
+# customer support router.
+# ============================================================
+
+app.include_router(
+    support_admin_router,
+    tags=["Support Administration"]
 )
 
 
