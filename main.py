@@ -10,6 +10,7 @@ from routers.recommendations import router as recommendations_router
 from routers.subscriptions import router as subscriptions_router
 from routers.farm_intelligence import router as farm_intelligence_router
 from routers.market_intelligence import router as market_intelligence_router
+from routers.support import router as support_router
 
 
 # ============================================================
@@ -207,6 +208,29 @@ app.include_router(
     mtn_callback_router,
     prefix="/api",
     tags=["MTN Callback"]
+)
+
+
+# ============================================================
+# CUSTOMER SUPPORT
+#
+# Customer support for farmers, suppliers and
+# agricultural businesses.
+#
+# Endpoints:
+#
+# GET  /api/support/categories
+# POST /api/support/tickets
+# GET  /api/support/tickets
+# GET  /api/support/tickets/{ticket_id}
+# POST /api/support/tickets/{ticket_id}/messages
+#
+# This router is intentionally separate from the marketplace.
+# ============================================================
+
+app.include_router(
+    support_router,
+    tags=["Customer Support"]
 )
 
 
