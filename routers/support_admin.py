@@ -1,3 +1,4 @@
+
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -785,16 +786,6 @@ async def create_support_agent(
     payload: CreateSupportAgent,
     agent=Depends(get_support_agent),
 ):
-    """
-    Create a new support staff account.
-
-    Only administrators can create support staff.
-
-    Supabase sends the new staff member an invitation email.
-    The staff member creates their own password through the
-    invitation flow.
-    """
-
     require_admin_role(agent)
 
     display_name = payload.display_name.strip()
@@ -819,39 +810,37 @@ async def create_support_agent(
             detail="Invalid support staff role.",
         )
 
-    # --------------------------------------------------------
-    # Prevent duplicate support-agent records.
-    # --------------------------------------------------------
-
     try:
-        existing_agent_response = (
+        # =====================================================
+        # CHECK FOR EXISTING SUPPORT AGENT
+        # =====================================================
+
+        existing_response = (
             supabase
             .from_("support_agents")
-            .select(
-                "id,user_id,email,is_active"
-            )
-            .eq(
-                "email",
-                email,
-            )
-            .maybe_single()
+            .select("id,user_id,email,is_active")
+            .eq("email", email)
             .execute()
         )
 
-        if existing_agent_response.data:
+        existing_agents = (
+            existing_response.data
+            if existing_response
+            else []
+        )
+
+        if existing_agents:
             raise HTTPException(
                 status_code=409,
-                detail="A support staff account with this email already exists.",
+                detail=(
+                    "A support staff account with this "
+                    "email already exists."
+                ),
             )
 
-        # ----------------------------------------------------
-        # Invite the user through Supabase Auth.
-        #
-        # The backend Supabase client must use the server-side
-        # service role credentials for this operation.
-        #
-        # Never expose the service role key to the React app.
-        # ----------------------------------------------------
+        # =====================================================
+        # SEND SUPABASE AUTH INVITATION
+        # =====================================================
 
         try:
             invite_response = (
@@ -859,7 +848,6 @@ async def create_support_agent(
                     email
                 )
             )
-
         except Exception as e:
             print(
                 "SUPPORT STAFF INVITATION ERROR:",
@@ -868,7 +856,11 @@ async def create_support_agent(
 
             raise HTTPException(
                 status_code=500,
-                detail="Unable to send the staff invitation.",
+                detail=(
+                    "Unable to send the staff invitation. "
+                    "Please check the backend Supabase "
+                    "configuration."
+                ),
             )
 
         invited_user = getattr(
@@ -880,7 +872,10 @@ async def create_support_agent(
         if not invited_user:
             raise HTTPException(
                 status_code=500,
-                detail="Staff invitation was not created.",
+                detail=(
+                    "Supabase did not return the invited "
+                    "staff user."
+                ),
             )
 
         invited_user_id = getattr(
@@ -892,44 +887,72 @@ async def create_support_agent(
         if not invited_user_id:
             raise HTTPException(
                 status_code=500,
-                detail="Invited staff user ID was not returned.",
+                detail=(
+                    "The invited staff user's ID "
+                    "was not returned."
+                ),
             )
 
-        # ----------------------------------------------------
-        # Create the support-agent record.
-        # ----------------------------------------------------
+        print(
+            "SUPPORT STAFF INVITED:",
+            invited_user_id,
+            email,
+        )
+
+        # =====================================================
+        # CREATE SUPPORT AGENT RECORD
+        # =====================================================
 
         support_agent_response = (
             supabase
             .from_("support_agents")
-            .insert({
-                "user_id": invited_user_id,
-                "display_name": display_name,
-                "email": email,
-                "agent_role": agent_role,
-                "is_active": True,
-            })
+            .insert(
+                {
+                    "user_id": invited_user_id,
+                    "display_name": display_name,
+                    "email": email,
+                    "agent_role": agent_role,
+                    "is_active": True,
+                }
+            )
             .execute()
         )
 
-        created_agents = (
-            support_agent_response.data or []
-        )
-
-        created_agent = (
-            created_agents[0]
-            if created_agents
-            else None
-        )
-
-        if not created_agent:
+        if not support_agent_response:
             raise HTTPException(
                 status_code=500,
-                detail="Staff account was invited, but the support-agent record could not be created.",
+                detail=(
+                    "The support-agent database "
+                    "operation returned no response."
+                ),
             )
 
+        created_agents = (
+            support_agent_response.data
+            or []
+        )
+
+        if not created_agents:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Staff invitation was sent, but "
+                    "the support-agent record could "
+                    "not be created."
+                ),
+            )
+
+        created_agent = created_agents[0]
+
+        print(
+            "SUPPORT AGENT CREATED:",
+            created_agent,
+        )
+
         return {
-            "message": "Staff invitation sent successfully.",
+            "message": (
+                "Staff invitation sent successfully."
+            ),
             "agent": created_agent,
         }
 
@@ -944,7 +967,9 @@ async def create_support_agent(
 
         raise HTTPException(
             status_code=500,
-            detail="Unable to create support staff account.",
+            detail=(
+                "Unable to create support staff account."
+            ),
         )
 
 
@@ -1185,3 +1210,4 @@ async def get_support_customers(
             status_code=500,
             detail="Unable to load support customers.",
         )
+
