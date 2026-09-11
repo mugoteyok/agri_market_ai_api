@@ -81,13 +81,12 @@ async def get_support_agent(
 
 
 # ============================================================
-# ADMIN ROLE CHECK
+# MANAGEMENT ROLE CHECK
 # ============================================================
 
 def require_management_role(agent):
     """
-    Supervisors and administrators can perform management
-    operations.
+    Supervisors and administrators can view management data.
     """
 
     role = str(
@@ -101,6 +100,26 @@ def require_management_role(agent):
         raise HTTPException(
             status_code=403,
             detail="Supervisor or administrator access required.",
+        )
+
+
+# ============================================================
+# ADMIN ROLE CHECK
+# ============================================================
+
+def require_admin_role(agent):
+    """
+    Only administrators can create or manage support staff.
+    """
+
+    role = str(
+        agent.get("agent_role", "")
+    ).strip().lower()
+
+    if role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator access required.",
         )
 
 
@@ -121,6 +140,26 @@ class SupportReply(BaseModel):
     )
 
 
+class CreateSupportAgent(BaseModel):
+    display_name: str = Field(
+        ...,
+        min_length=2,
+        max_length=120,
+    )
+
+    email: str = Field(
+        ...,
+        min_length=5,
+        max_length=320,
+    )
+
+    agent_role: str = Field(
+        ...,
+        min_length=1,
+        max_length=30,
+    )
+
+
 # ============================================================
 # CONSTANTS
 # ============================================================
@@ -137,6 +176,12 @@ VALID_PRIORITIES = {
     "normal",
     "high",
     "urgent",
+}
+
+VALID_AGENT_ROLES = {
+    "agent",
+    "supervisor",
+    "admin",
 }
 
 
@@ -511,14 +556,6 @@ async def send_support_reply(
                 detail="Closed tickets cannot receive new messages.",
             )
 
-        # ----------------------------------------------------
-        # Insert the support message.
-        #
-        # Do NOT use .single() here. The installed Supabase
-        # Python client does not expose .single() on this
-        # query builder.
-        # ----------------------------------------------------
-
         insert_response = (
             supabase
             .from_("support_messages")
@@ -643,13 +680,6 @@ async def update_support_ticket(
                 detail="Support ticket not found.",
             )
 
-        # ----------------------------------------------------
-        # Update the ticket.
-        #
-        # Do NOT use .single() here for the same reason as the
-        # support message insert above.
-        # ----------------------------------------------------
-
         response = (
             supabase
             .from_("support_tickets")
@@ -747,6 +777,178 @@ async def get_support_agents(
 
 
 # ============================================================
+# CREATE SUPPORT STAFF
+# ============================================================
+
+@router.post("/agents")
+async def create_support_agent(
+    payload: CreateSupportAgent,
+    agent=Depends(get_support_agent),
+):
+    """
+    Create a new support staff account.
+
+    Only administrators can create support staff.
+
+    Supabase sends the new staff member an invitation email.
+    The staff member creates their own password through the
+    invitation flow.
+    """
+
+    require_admin_role(agent)
+
+    display_name = payload.display_name.strip()
+    email = payload.email.strip().lower()
+    agent_role = payload.agent_role.strip().lower()
+
+    if not display_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Staff name cannot be empty.",
+        )
+
+    if not email:
+        raise HTTPException(
+            status_code=400,
+            detail="Staff email cannot be empty.",
+        )
+
+    if agent_role not in VALID_AGENT_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid support staff role.",
+        )
+
+    # --------------------------------------------------------
+    # Prevent duplicate support-agent records.
+    # --------------------------------------------------------
+
+    try:
+        existing_agent_response = (
+            supabase
+            .from_("support_agents")
+            .select(
+                "id,user_id,email,is_active"
+            )
+            .eq(
+                "email",
+                email,
+            )
+            .maybe_single()
+            .execute()
+        )
+
+        if existing_agent_response.data:
+            raise HTTPException(
+                status_code=409,
+                detail="A support staff account with this email already exists.",
+            )
+
+        # ----------------------------------------------------
+        # Invite the user through Supabase Auth.
+        #
+        # The backend Supabase client must use the server-side
+        # service role credentials for this operation.
+        #
+        # Never expose the service role key to the React app.
+        # ----------------------------------------------------
+
+        try:
+            invite_response = (
+                supabase.auth.admin.invite_user_by_email(
+                    email
+                )
+            )
+
+        except Exception as e:
+            print(
+                "SUPPORT STAFF INVITATION ERROR:",
+                str(e),
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to send the staff invitation.",
+            )
+
+        invited_user = getattr(
+            invite_response,
+            "user",
+            None,
+        )
+
+        if not invited_user:
+            raise HTTPException(
+                status_code=500,
+                detail="Staff invitation was not created.",
+            )
+
+        invited_user_id = getattr(
+            invited_user,
+            "id",
+            None,
+        )
+
+        if not invited_user_id:
+            raise HTTPException(
+                status_code=500,
+                detail="Invited staff user ID was not returned.",
+            )
+
+        # ----------------------------------------------------
+        # Create the support-agent record.
+        # ----------------------------------------------------
+
+        support_agent_response = (
+            supabase
+            .from_("support_agents")
+            .insert({
+                "user_id": invited_user_id,
+                "display_name": display_name,
+                "email": email,
+                "agent_role": agent_role,
+                "is_active": True,
+            })
+            .execute()
+        )
+
+        created_agents = (
+            support_agent_response.data or []
+        )
+
+        created_agent = (
+            created_agents[0]
+            if created_agents
+            else None
+        )
+
+        if not created_agent:
+            raise HTTPException(
+                status_code=500,
+                detail="Staff account was invited, but the support-agent record could not be created.",
+            )
+
+        return {
+            "message": "Staff invitation sent successfully.",
+            "agent": created_agent,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        print(
+            "CREATE SUPPORT AGENT ERROR:",
+            str(e),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create support staff account.",
+        )
+
+
+# ============================================================
 # SUPPORT CUSTOMERS
 # ============================================================
 
@@ -778,10 +980,6 @@ async def get_support_customers(
         )
 
     try:
-        # ----------------------------------------------------
-        # Load customer profiles.
-        # ----------------------------------------------------
-
         profiles_query = (
             supabase
             .from_("profiles")
@@ -817,13 +1015,6 @@ async def get_support_customers(
             profiles_response.data or []
         )
 
-        # ----------------------------------------------------
-        # Load support tickets.
-        #
-        # We aggregate these in Python so the Customers page
-        # does not require any database schema changes.
-        # ----------------------------------------------------
-
         tickets_response = (
             supabase
             .from_("support_tickets")
@@ -843,10 +1034,6 @@ async def get_support_customers(
         tickets = (
             tickets_response.data or []
         )
-
-        # ----------------------------------------------------
-        # Build ticket activity by customer.
-        # ----------------------------------------------------
 
         customer_activity = {}
 
@@ -922,10 +1109,6 @@ async def get_support_customers(
                 activity[
                     "last_activity"
                 ] = updated_at
-
-        # ----------------------------------------------------
-        # Combine profile information with support activity.
-        # ----------------------------------------------------
 
         customers = []
 
