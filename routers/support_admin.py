@@ -1,3 +1,4 @@
+
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -325,10 +326,14 @@ async def get_support_tickets(
             detail="Invalid ticket priority.",
         )
 
+    # All supported Agri AI Assist customer roles.
     valid_roles = {
         "farmer",
         "supplier",
         "agricultural_business",
+        "exporter",
+        "cooperative",
+        "buyer",
     }
 
     if user_role and user_role not in valid_roles:
@@ -850,9 +855,9 @@ async def create_support_agent(
             invite_response = (
                 supabase.auth.admin.invite_user_by_email(
                     email,
-    options={
-        "redirect_to": "http://localhost:5173",
-    },
+                    options={
+                        "redirect_to": "http://localhost:5173",
+                    },
                 )
             )
         except Exception as e:
@@ -1156,15 +1161,19 @@ async def get_support_customers(
     """
     Return customer profiles for the internal support portal.
 
-    Customers are farmers, suppliers, and agricultural
-    businesses. Support ticket activity is summarized for
-    each customer.
+    Customers include farmers, suppliers, agricultural
+    businesses, exporters, cooperatives, and buyers.
+    Support ticket activity is summarized for each customer.
     """
 
+    # All supported Agri AI Assist customer roles.
     valid_roles = {
         "farmer",
         "supplier",
         "agricultural_business",
+        "exporter",
+        "cooperative",
+        "buyer",
     }
 
     if role and role not in valid_roles:
