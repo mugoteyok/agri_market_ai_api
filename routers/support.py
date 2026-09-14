@@ -21,6 +21,9 @@ ALLOWED_CUSTOMER_ROLES = {
     "farmer",
     "supplier",
     "agricultural_business",
+    "exporter",
+    "cooperative",
+    "buyer",
 }
 
 
