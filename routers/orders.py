@@ -597,6 +597,28 @@ async def buyer_orders(
 #     seller
 #
 # for this order.
+#
+# The response may additionally contain:
+#
+#     payment_recipient_number
+#
+# This is resolved from:
+#
+#     orders.seller_id
+#             ↓
+#     profiles.id
+#             ↓
+#     profiles.mobile_money_number
+#
+# IMPORTANT:
+#
+# The recipient number is returned ONLY after the existing
+# order ownership check succeeds.
+#
+# The buyer's own payment number is still supplied separately
+# to POST /orders/{order_id}/payment.
+#
+# This does NOT modify the orders database record.
 # ============================================================
 
 @router.get("/orders/{order_id}")
@@ -627,6 +649,12 @@ async def get_order_details(
 
     # ========================================================
     # VERIFY ORDER OWNERSHIP
+    #
+    # The existing security rule is preserved:
+    #
+    #     buyer OR seller
+    #
+    # can access the order.
     # ========================================================
 
     buyer_id = order.get(
@@ -650,14 +678,102 @@ async def get_order_details(
             ),
         )
 
+    # ========================================================
+    # PAYMENT RECIPIENT
+    #
+    # Resolve the seller's Mobile Money number from the
+    # seller's profile.
+    #
+    # IMPORTANT:
+    #
+    # We intentionally DO NOT get this number from:
+    #
+    #     product
+    #
+    # and we DO NOT use the buyer's payment number.
+    #
+    # The relationship is:
+    #
+    #     order.seller_id
+    #          ↓
+    #     profiles.id
+    #          ↓
+    #     profiles.mobile_money_number
+    # ========================================================
+
+    payment_recipient_number = None
+
+    if seller_id:
+
+        try:
+
+            profile_response = (
+                supabase
+                .table("profiles")
+                .select(
+                    "mobile_money_number"
+                )
+                .eq(
+                    "id",
+                    seller_id,
+                )
+                .maybe_single()
+                .execute()
+            )
+
+            if profile_response.data:
+
+                payment_recipient_number = (
+                    profile_response.data.get(
+                        "mobile_money_number"
+                    )
+                )
+
+        except Exception as e:
+
+            # Do not break the order-details endpoint if
+            # the optional recipient lookup fails.
+            #
+            # The order itself remains available.
+            print(
+                "PAYMENT RECIPIENT PROFILE LOOKUP ERROR:",
+                str(e),
+            )
+
+    # ========================================================
+    # ADD PAYMENT RECIPIENT TO API RESPONSE
+    #
+    # This only enriches the response returned to Flutter.
+    #
+    # It does NOT update the orders table.
+    #
+    # Example:
+    #
+    # {
+    #     ...
+    #     "seller_id": "...",
+    #     "payment_recipient_number": "0772123456"
+    # }
+    #
+    # If the seller has not configured a Mobile Money number,
+    # the value will be null.
+    # ========================================================
+
+    order[
+        "payment_recipient_number"
+    ] = payment_recipient_number
+
     return order
-    
+
+
 # ============================================================
 # ACCEPT ORDER
 #
 # PUT /api/marketplace/orders/{order_id}/accept
 #
 # ONLY THE SELLER WHO OWNS THE ORDER CAN ACCEPT IT.
+#
+# Existing working behavior is preserved.
 # ============================================================
 
 @router.put("/orders/{order_id}/accept")
@@ -716,6 +832,69 @@ async def accept_order(
                 "in its current state."
             ),
         )
+
+
+
+
+
+
+
+
+
+    
+
+
+
+    
+        
+        
+        
+        
+            
+        
+    
+        
+    
+
+    
+
+        
+            
+            
+        
+
+    
+
+    
+    
+    
+
+    
+
+        
+            
+            
+                
+                
+            
+        
+
+    
+    
+    
+
+    
+        
+        
+    
+
+    
+            
+            
+                
+                
+            
+        
 
     # ========================================================
     # UPDATE ORDER
