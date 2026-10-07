@@ -803,7 +803,7 @@ async def withdraw(
             phone_number,
 
         "provider":
-            data.network.value,
+             provider,
 
         "transaction_id":
             transaction_id,
@@ -1079,7 +1079,7 @@ async def withdraw(
                 phone_number,
 
             "provider":
-                data.network.value,
+                 provider,
 
             "previous_balance":
                 balance,
