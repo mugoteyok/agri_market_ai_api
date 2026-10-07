@@ -482,75 +482,52 @@ async def withdraw(
 ):
 
     # ========================================================
-    # IDENTIFY SELLER
+    # IDENTIFY SELLER FROM AUTHENTICATED USER
+    # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # Do NOT trust seller_id, farmer_id, seller_type,
+    # mobile_number, or network from the Flutter request.
+    #
+    # The authenticated Supabase user is the source of
+    # identity and the profiles table is the source of the
+    # seller role and Mobile Money destination.
     # ========================================================
 
-    seller_id = (
-        data.seller_id
-        or data.farmer_id
+    seller_id = str(user.id)
+
+    profile_response = (
+        supabase
+        .table("profiles")
+        .select(
+            "id, role, mobile_money_number"
+        )
+        .eq(
+            "id",
+            seller_id,
+        )
+        .maybe_single()
+        .execute()
     )
 
-    seller_type = (
-        data.seller_type
-        or "farmer"
-    ).strip().lower()
+    profile = profile_response.data
 
-    # ========================================================
-    # VERIFY AUTHENTICATED USER
-    # ========================================================
-    #
-    # The authenticated Supabase user must own the wallet
-    # being used for the withdrawal.
-    #
-    # This prevents:
-    #
-    #   Farmer A -> withdrawing Farmer B's money
-    #   Supplier A -> withdrawing Supplier B's money
-    #
-    # Even if the Flutter request is manually modified,
-    # the backend checks the JWT identity here.
-    # ========================================================
-
-    if seller_type == "farmer":
-
-        if str(user.id) != str(seller_id):
-
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "You can only withdraw from "
-                    "your own wallet."
-                ),
-            )
-
-    elif seller_type == "supplier":
-
-        if str(user.id) != str(seller_id):
-
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "You can only withdraw from "
-                    "your own wallet."
-                ),
-            )
-
-    # ========================================================
-    # VALIDATE SELLER ID
-    # ========================================================
-
-    if not seller_id:
+    if not profile:
 
         raise HTTPException(
-            status_code=400,
-            detail="Seller ID is required.",
+            status_code=404,
+            detail="Seller profile not found.",
         )
 
-    seller_id = seller_id.strip()
+    # ========================================================
+    # DETERMINE SELLER TYPE FROM PROFILE
+    # ========================================================
 
-    # ========================================================
-    # VALIDATE SELLER TYPE
-    # ========================================================
+    seller_type = (
+        profile.get("role")
+        or ""
+    ).strip().lower()
 
     if seller_type not in [
         "farmer",
@@ -558,12 +535,87 @@ async def withdraw(
     ]:
 
         raise HTTPException(
-            status_code=400,
+            status_code=403,
             detail=(
-                "Invalid seller type. "
-                "Must be farmer or supplier."
+                "Only farmers and suppliers can "
+                "withdraw marketplace earnings."
             ),
         )
+
+    # ========================================================
+    # GET SAVED MOBILE MONEY NUMBER
+    # ========================================================
+    #
+    # This is the same number displayed on the Payments
+    # screen and used for future marketplace payment
+    # receiving.
+    #
+    # Flutter does NOT supply the withdrawal destination.
+    # ========================================================
+
+    raw_mobile_money_number = (
+        profile.get("mobile_money_number")
+        or ""
+    ).strip()
+
+    if not raw_mobile_money_number:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No Mobile Money number is saved. "
+                "Add your Mobile Money number in "
+                "Payments before withdrawing."
+            ),
+        )
+
+    # ========================================================
+    # NORMALIZE MOBILE MONEY NUMBER
+    # ========================================================
+
+    phone_number = (
+        raw_mobile_money_number
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace("+", "")
+    )
+
+    if phone_number.startswith("0"):
+
+        phone_number = (
+            "256"
+            + phone_number[1:]
+        )
+
+    # ========================================================
+    # VALIDATE UGANDA MOBILE MONEY NUMBER
+    # ========================================================
+
+    if (
+        not phone_number.isdigit()
+        or len(phone_number) != 12
+        or not phone_number.startswith("2567")
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Your saved Mobile Money number is "
+                "invalid. Please update it in Payments."
+            ),
+        )
+
+    # ========================================================
+    # V1 PROVIDER
+    # ========================================================
+    #
+    # The current MTN disbursement service supports MTN.
+    # Do not trust a client-supplied network value.
+    # ========================================================
+
+    provider = "MTN"
 
     # ========================================================
     # VALIDATE AMOUNT
@@ -587,56 +639,6 @@ async def withdraw(
             detail=(
                 "Withdrawal amount must be "
                 "greater than zero."
-            ),
-        )
-
-    # ========================================================
-    # NORMALIZE PHONE NUMBER
-    # ========================================================
-
-    phone_number = (
-        data.mobile_number
-        .strip()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("+", "")
-    )
-
-    if phone_number.startswith("0"):
-
-        phone_number = (
-            "256"
-            + phone_number[1:]
-        )
-
-    # ========================================================
-    # VALIDATE UGANDA PHONE NUMBER
-    # ========================================================
-
-    if not phone_number.isdigit():
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid Mobile Money phone number."
-            ),
-        )
-
-    if not phone_number.startswith("256"):
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Use a valid Uganda Mobile Money number."
-            ),
-        )
-
-    if len(phone_number) != 12:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Use a valid Uganda Mobile Money number."
             ),
         )
 
