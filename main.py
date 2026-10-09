@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from routers.account import router as account_router
 from routers.products import router as products_router
 from routers.orders import router as orders_router
 from routers.forecast import router as forecast_router
@@ -283,7 +283,7 @@ app.include_router(
     tags=["Support Administration"]
 )
 
-
+app.include_router(account_router)
 # ============================================================
 # HEALTH CHECK
 # ============================================================
