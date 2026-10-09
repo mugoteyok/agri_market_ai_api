@@ -38,7 +38,7 @@ def has_user_records(
     """Check whether a protected table contains records for this user."""
     response = (
         admin_client.table(table)
-        .select("id")
+        .select(column)
         .eq(column, user_id)
         .limit(1)
         .execute()
@@ -72,6 +72,7 @@ def check_deletion_safety(
     No records are changed by these checks.
     """
     protected_checks = [
+        # Marketplace and financial records
         ("orders", "buyer_id"),
         ("orders", "farmer_id"),
         ("orders", "seller_id"),
@@ -79,12 +80,24 @@ def check_deletion_safety(
         ("transactions", "seller_id"),
         ("withdrawals", "farmer_id"),
         ("withdrawals", "seller_id"),
+
+        # Subscriptions and products
         ("subscriptions", "supplier_id"),
         ("subscription_payments", "supplier_id"),
         ("products", "farmer_id"),
         ("products", "seller_id"),
+
+        # Business administration and ownership
         ("business_accounts", "approved_by"),
         ("business_portal_admins", "created_by"),
+        ("business_profiles", "supplier_id"),
+
+        # User activity and support records
+        ("disease_history", "user_id"),
+        ("notifications", "user_id"),
+        ("support_agents", "user_id"),
+        ("support_messages", "sender_id"),
+        ("support_tickets", "user_id"),
     ]
 
     for table, column in protected_checks:
@@ -94,10 +107,12 @@ def check_deletion_safety(
                 detail=(
                     "Account deletion requires additional review because "
                     "this account is linked to marketplace, financial, "
-                    "business, or subscription records. Please contact support."
+                    "business, support, or subscription records. "
+                    "Please contact support."
                 ),
             )
 
+    # Check both farmer and seller wallet associations.
     for column in ("farmer_id", "seller_id"):
         if has_nonzero_wallet(admin_client, column, user_id):
             raise HTTPException(
