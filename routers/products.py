@@ -277,6 +277,56 @@ async def create_product(
 
 
     # ========================================================
+    # VALIDATE PRODUCT IMAGES
+    # ========================================================
+
+    # Keep the primary image compatible with older app versions.
+    # Store the gallery images separately.
+
+    image_urls = [
+        url.strip()
+        for url in (product.image_urls or [])
+        if url and url.strip()
+    ]
+
+    primary_image_url = (
+        product.image_url.strip()
+        if product.image_url and product.image_url.strip()
+        else None
+    )
+
+    # If the primary image is not explicitly provided,
+    # use the first gallery image.
+
+    if not primary_image_url and image_urls:
+
+        primary_image_url = image_urls[0]
+
+
+    # Ensure the primary image is included in the gallery.
+
+    if (
+        primary_image_url
+        and primary_image_url not in image_urls
+    ):
+
+        image_urls.insert(
+            0,
+            primary_image_url
+        )
+
+
+    # A listing may contain no more than five images.
+
+    if len(image_urls) > 5:
+
+        raise HTTPException(
+            status_code=400,
+            detail="A product can have a maximum of five images."
+        )
+
+
+    # ========================================================
     # CREATE PRODUCT DATA
     # ========================================================
 
@@ -366,11 +416,18 @@ async def create_product(
 
 
         # ====================================================
-        # IMAGE
+        # IMAGES
         # ====================================================
 
+        # Primary image retained for backward compatibility.
+
         "image_url":
-            product.image_url,
+            primary_image_url,
+
+        # Full product gallery.
+
+        "image_urls":
+            image_urls or None,
 
 
         # ====================================================
@@ -788,12 +845,6 @@ async def get_farm_supplies():
         )
 
 
-
-
-
-
-
-
 # ============================================================
 # GET FARMER PRODUCTS
 #
@@ -1156,4 +1207,3 @@ async def delete_product(
             detail=str(e)
 
         )
-
