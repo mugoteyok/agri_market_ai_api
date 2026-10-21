@@ -1,5 +1,6 @@
+
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 
 # ============================================================
@@ -123,10 +124,16 @@ class ProductCreate(BaseModel):
 
 
     # ========================================================
-    # IMAGE
+    # IMAGES
     # ========================================================
 
+    # Primary image retained for backward compatibility.
+
     image_url: Optional[str] = None
+
+    # Up to five product gallery images.
+
+    image_urls: Optional[List[str]] = None
 
 
     # ========================================================
@@ -252,10 +259,16 @@ class ProductResponse(BaseModel):
 
 
     # ========================================================
-    # IMAGE
+    # IMAGES
     # ========================================================
 
+    # Primary image retained for backward compatibility.
+
     image_url: Optional[str] = None
+
+    # Product gallery images.
+
+    image_urls: Optional[List[str]] = None
 
 
     # ========================================================
