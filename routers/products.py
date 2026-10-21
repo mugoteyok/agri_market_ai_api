@@ -280,14 +280,9 @@ async def create_product(
     # VALIDATE PRODUCT IMAGES
     # ========================================================
 
-    # Keep the primary image compatible with older app versions.
-    # Store the gallery images separately.
-
-    image_urls = [
-        url.strip()
-        for url in (product.image_urls or [])
-        if url and url.strip()
-    ]
+    # Keep image_url for backward compatibility.
+    # Store the complete gallery in image_urls.
+    # The maximum number of distinct images is five.
 
     primary_image_url = (
         product.image_url.strip()
@@ -295,28 +290,36 @@ async def create_product(
         else None
     )
 
-    # If the primary image is not explicitly provided,
-    # use the first gallery image.
+    image_urls = []
 
-    if not primary_image_url and image_urls:
+    for url in (product.image_urls or []):
 
-        primary_image_url = image_urls[0]
+        if not url or not url.strip():
 
+            continue
 
-    # Ensure the primary image is included in the gallery.
+        cleaned_url = url.strip()
 
-    if (
-        primary_image_url
-        and primary_image_url not in image_urls
-    ):
+        # Preserve order and avoid duplicate gallery entries.
+
+        if cleaned_url not in image_urls:
+
+            image_urls.append(cleaned_url)
+
+    # Include the primary image in the gallery.
+
+    if primary_image_url:
+
+        if primary_image_url in image_urls:
+
+            image_urls.remove(primary_image_url)
 
         image_urls.insert(
             0,
             primary_image_url
         )
 
-
-    # A listing may contain no more than five images.
+    # Reject listings containing more than five distinct images.
 
     if len(image_urls) > 5:
 
@@ -324,6 +327,12 @@ async def create_product(
             status_code=400,
             detail="A product can have a maximum of five images."
         )
+
+    # Keep the primary image consistent with the gallery.
+
+    if image_urls:
+
+        primary_image_url = image_urls[0]
 
 
     # ========================================================
