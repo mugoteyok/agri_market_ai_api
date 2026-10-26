@@ -135,6 +135,9 @@ class ProductCreate(BaseModel):
 
     image_urls: Optional[List[str]] = None
 
+    # Optional demonstration video uploaded to Supabase Storage.
+    video_url: Optional[str] = None
+
 
     # ========================================================
     # FARM SUPPLY AVAILABILITY
@@ -269,6 +272,9 @@ class ProductResponse(BaseModel):
     # Product gallery images.
 
     image_urls: Optional[List[str]] = None
+
+    # Optional product demonstration video.
+    video_url: Optional[str] = None
 
 
     # ========================================================

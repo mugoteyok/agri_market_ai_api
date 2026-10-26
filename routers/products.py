@@ -438,6 +438,11 @@ async def create_product(
         "image_urls":
             image_urls or None,
 
+        # Optional product demonstration video.
+        "video_url":
+            product.video_url.strip()
+            if product.video_url and product.video_url.strip()
+            else None,
 
         # ====================================================
         # PRODUCT STATUS
