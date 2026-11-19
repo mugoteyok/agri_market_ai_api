@@ -3,3 +3,8 @@ venv/
 __pycache__/
 *.pyc
 mtn_api_key.py
+.venv/
+backups/
+*.bak
+_test_disease_supply_route.py
+apply_integration.py

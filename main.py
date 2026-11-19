@@ -8,6 +8,7 @@ from routers.forecast import router as forecast_router
 from routers.wallet import router as wallet_router
 from routers.promotions import router as promotions_router
 from routers.recommendations import router as recommendations_router
+from routers.disease_supply_matches import router as disease_supply_matches_router
 from routers.subscriptions import router as subscriptions_router
 from routers.farm_intelligence import router as farm_intelligence_router
 from routers.market_intelligence import router as market_intelligence_router
@@ -131,6 +132,13 @@ app.include_router(
     recommendations_router,
     prefix="/api/marketplace",
     tags=["Recommendations"]
+)
+
+
+app.include_router(
+    disease_supply_matches_router,
+    prefix="/api/marketplace",
+    tags=["Disease Supply Recommendations"]
 )
 
 
