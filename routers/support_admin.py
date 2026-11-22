@@ -4,9 +4,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from auth import get_authenticated_user
-from database import supabase
+from database import get_admin_supabase
+from services.support_ai_service import generate_embedding, GEMINI_EMBEDDING_MODEL
 
 
 router = APIRouter(
@@ -40,7 +42,7 @@ async def get_support_agent(
 
     try:
         response = (
-            supabase
+            get_admin_supabase()
             .from_("support_agents")
             .select(
                 "id,user_id,display_name,email,agent_role,is_active,created_at"
@@ -205,7 +207,7 @@ async def get_support_stats(
 
     try:
         tickets_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .select(
                 "id,status,priority,created_at,updated_at"
@@ -344,7 +346,7 @@ async def get_support_tickets(
 
     try:
         query = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .select(
                 """
@@ -428,7 +430,7 @@ async def get_support_ticket(
 
     try:
         ticket_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .select(
                 """
@@ -467,7 +469,7 @@ async def get_support_ticket(
             )
 
         messages_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_messages")
             .select(
                 """
@@ -539,7 +541,7 @@ async def send_support_reply(
 
     try:
         ticket_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .select(
                 "id,status"
@@ -567,7 +569,7 @@ async def send_support_reply(
             )
 
         insert_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_messages")
             .insert({
                 "ticket_id": ticket_id,
@@ -673,7 +675,7 @@ async def update_support_ticket(
 
     try:
         existing_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .select("id")
             .eq(
@@ -691,7 +693,7 @@ async def update_support_ticket(
             )
 
         response = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .update(updates)
             .eq(
@@ -755,7 +757,7 @@ async def get_support_agents(
 
     try:
         response = (
-            supabase
+            get_admin_supabase()
             .from_("support_agents")
             .select(
                 "id,user_id,display_name,email,agent_role,is_active,created_at"
@@ -825,7 +827,7 @@ async def create_support_agent(
         # =====================================================
 
         existing_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_agents")
             .select("id,user_id,email,is_active")
             .eq("email", email)
@@ -853,7 +855,7 @@ async def create_support_agent(
 
         try:
             invite_response = (
-                supabase.auth.admin.invite_user_by_email(
+                get_admin_supabase().auth.admin.invite_user_by_email(
                     email,
                     options={
                         "redirect_to": "http://localhost:5173",
@@ -916,7 +918,7 @@ async def create_support_agent(
         # =====================================================
 
         support_agent_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_agents")
             .insert(
                 {
@@ -1033,7 +1035,7 @@ async def update_support_agent(
         # =====================================================
 
         existing_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_agents")
             .select(
                 "id,user_id,display_name,email,agent_role,is_active,created_at"
@@ -1094,7 +1096,7 @@ async def update_support_agent(
         # =====================================================
 
         response = (
-            supabase
+            get_admin_supabase()
             .from_("support_agents")
             .update(updates)
             .eq(
@@ -1184,7 +1186,7 @@ async def get_support_customers(
 
     try:
         profiles_query = (
-            supabase
+            get_admin_supabase()
             .from_("profiles")
             .select(
                 """
@@ -1219,7 +1221,7 @@ async def get_support_customers(
         )
 
         tickets_response = (
-            supabase
+            get_admin_supabase()
             .from_("support_tickets")
             .select(
                 """
@@ -1388,3 +1390,360 @@ async def get_support_customers(
             status_code=500,
             detail="Unable to load support customers.",
         )
+
+# ============================================================
+# AI SUPPORT FAQ MANAGEMENT
+# ============================================================
+
+FAQ_RESPONSE_FIELDS = (
+    "id,category_id,question,answer,locale,keywords,"
+    "embedding_model,is_active,created_at,updated_at"
+)
+
+
+class CreateSupportFAQ(BaseModel):
+    question: str = Field(..., min_length=3, max_length=2000)
+    answer: str = Field(..., min_length=3, max_length=10000)
+    locale: str = Field(default="en", min_length=2, max_length=12)
+    category_id: Optional[str] = None
+    keywords: list[str] = Field(default_factory=list, max_length=20)
+
+
+class UpdateSupportFAQ(BaseModel):
+    question: Optional[str] = Field(default=None, min_length=3, max_length=2000)
+    answer: Optional[str] = Field(default=None, min_length=3, max_length=10000)
+    locale: Optional[str] = Field(default=None, min_length=2, max_length=12)
+    category_id: Optional[str] = None
+    keywords: Optional[list[str]] = Field(default=None, max_length=20)
+    is_active: Optional[bool] = None
+
+
+def _validate_faq_locale(locale: str) -> str:
+    normalized = locale.strip().lower()
+    if normalized not in {"en", "lg"}:
+        raise HTTPException(
+            status_code=400,
+            detail="FAQ locale must be 'en' or 'lg'.",
+        )
+    return normalized
+
+
+def _clean_faq_keywords(keywords: list[str]) -> list[str]:
+    cleaned = []
+    for keyword in keywords:
+        value = str(keyword).strip()
+        if not value:
+            continue
+        if len(value) > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Each FAQ keyword must be 100 characters or fewer.",
+            )
+        if value not in cleaned:
+            cleaned.append(value)
+    if len(cleaned) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail="A FAQ can have at most 20 keywords.",
+        )
+    return cleaned
+
+
+def _validate_faq_category(category_id: Optional[str]) -> None:
+    if category_id is None:
+        return
+    try:
+        response = (
+            get_admin_supabase()
+            .from_("support_categories")
+            .select("id")
+            .eq("id", category_id)
+            .maybe_single()
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(
+                status_code=400,
+                detail="Support category was not found.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("SUPPORT FAQ CATEGORY VALIDATION ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to validate FAQ category.",
+        ) from exc
+
+
+async def _create_faq_embedding(
+    question: str,
+    answer: str,
+    keywords: list[str],
+) -> list[float]:
+    document = (
+        f"Question: {question}\n"
+        f"Approved answer: {answer}\n"
+        f"Keywords: {', '.join(keywords)}"
+    )
+    try:
+        return await run_in_threadpool(
+            lambda: generate_embedding(document, document_title=question)
+        )
+    except Exception as exc:
+        print("SUPPORT FAQ EMBEDDING ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="FAQ embedding service is unavailable. Check Gemini configuration and try again.",
+        ) from exc
+
+
+@router.get("/faqs")
+async def list_support_faqs(
+    limit: int = Query(default=100, ge=1, le=200),
+    active: Optional[bool] = Query(default=None),
+    agent=Depends(get_support_agent),
+):
+    """List support FAQs for active supervisors and administrators."""
+
+    require_management_role(agent)
+    try:
+        query = (
+            get_admin_supabase()
+            .from_("support_faqs")
+            .select(FAQ_RESPONSE_FIELDS)
+            .order("updated_at", desc=True)
+            .limit(limit)
+        )
+        if active is not None:
+            query = query.eq("is_active", active)
+        response = query.execute()
+        return {"faqs": response.data or []}
+    except Exception as exc:
+        print("SUPPORT FAQ LIST ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load support FAQs.",
+        ) from exc
+
+
+@router.post("/faqs", status_code=201)
+async def create_support_faq(
+    payload: CreateSupportFAQ,
+    agent=Depends(get_support_agent),
+):
+    """Create a draft FAQ. A manager must explicitly activate it."""
+
+    require_management_role(agent)
+    question = payload.question.strip()
+    answer = payload.answer.strip()
+    if len(question) < 3 or len(answer) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="FAQ question and answer cannot be blank.",
+        )
+
+    locale = _validate_faq_locale(payload.locale)
+    keywords = _clean_faq_keywords(payload.keywords)
+    _validate_faq_category(payload.category_id)
+    embedding = await _create_faq_embedding(question, answer, keywords)
+
+    try:
+        response = (
+            get_admin_supabase()
+            .from_("support_faqs")
+            .insert({
+                "question": question,
+                "answer": answer,
+                "locale": locale,
+                "category_id": payload.category_id,
+                "keywords": keywords,
+                "embedding": embedding,
+                "embedding_model": GEMINI_EMBEDDING_MODEL,
+                "is_active": False,
+            })
+            .select(FAQ_RESPONSE_FIELDS)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            raise HTTPException(
+                status_code=500,
+                detail="FAQ draft was not created.",
+            )
+        return {"success": True, "faq": rows[0]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("SUPPORT FAQ CREATE ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create support FAQ.",
+        ) from exc
+
+
+@router.patch("/faqs/{faq_id}")
+async def update_support_faq(
+    faq_id: str,
+    payload: UpdateSupportFAQ,
+    agent=Depends(get_support_agent),
+):
+    """Update an FAQ and regenerate its vector when searchable content changes."""
+
+    require_management_role(agent)
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status_code=400,
+            detail="No FAQ changes supplied.",
+        )
+
+    for required_field in {"question", "answer", "locale", "keywords", "is_active"}:
+        if required_field in updates and updates[required_field] is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{required_field} cannot be null.",
+            )
+
+    if "locale" in updates and updates["locale"] is not None:
+        updates["locale"] = _validate_faq_locale(updates["locale"])
+    if "category_id" in updates:
+        _validate_faq_category(updates["category_id"])
+    if "keywords" in updates and updates["keywords"] is not None:
+        updates["keywords"] = _clean_faq_keywords(updates["keywords"])
+    if "question" in updates and updates["question"] is not None:
+        updates["question"] = updates["question"].strip()
+        if len(updates["question"]) < 3:
+            raise HTTPException(status_code=400, detail="FAQ question cannot be blank.")
+    if "answer" in updates and updates["answer"] is not None:
+        updates["answer"] = updates["answer"].strip()
+        if len(updates["answer"]) < 3:
+            raise HTTPException(status_code=400, detail="FAQ answer cannot be blank.")
+
+    try:
+        existing_response = (
+            get_admin_supabase()
+            .from_("support_faqs")
+            .select("id,question,answer,keywords,locale")
+            .eq("id", faq_id)
+            .maybe_single()
+            .execute()
+        )
+        existing = existing_response.data
+        if not existing:
+            raise HTTPException(status_code=404, detail="Support FAQ not found.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("SUPPORT FAQ LOOKUP ERROR:", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Unable to load support FAQ.") from exc
+
+    searchable_fields = {"question", "answer", "keywords"}
+    if searchable_fields.intersection(updates):
+        question = updates.get("question", existing["question"])
+        answer = updates.get("answer", existing["answer"])
+        keywords = updates.get("keywords", existing.get("keywords") or [])
+        embedding = await _create_faq_embedding(question, answer, keywords)
+        updates["embedding"] = embedding
+        updates["embedding_model"] = GEMINI_EMBEDDING_MODEL
+
+    try:
+        response = (
+            get_admin_supabase()
+            .from_("support_faqs")
+            .update(updates)
+            .eq("id", faq_id)
+            .select(FAQ_RESPONSE_FIELDS)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            raise HTTPException(status_code=404, detail="Support FAQ was not updated.")
+        return {"success": True, "faq": rows[0]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("SUPPORT FAQ UPDATE ERROR:", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Unable to update support FAQ.") from exc
+
+
+class UpdateUnansweredQuestionStatus(BaseModel):
+    status: str = Field(..., min_length=1, max_length=20)
+
+
+@router.patch("/assistant/unanswered/{unanswered_id}")
+async def update_unanswered_support_question(
+    unanswered_id: str,
+    payload: UpdateUnansweredQuestionStatus,
+    agent=Depends(get_support_agent),
+):
+    """Mark an unanswered question as reviewed, converted, or dismissed."""
+
+    require_management_role(agent)
+    valid_statuses = {"reviewed", "converted", "dismissed"}
+    if payload.status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="Status must be reviewed, converted, or dismissed.",
+        )
+
+    try:
+        response = (
+            get_admin_supabase()
+            .from_("support_unanswered")
+            .update({"status": payload.status})
+            .eq("id", unanswered_id)
+            .select("id,question,locale,channel,reason,best_match_score,faq_id,status,created_at")
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail="Unanswered support question not found.",
+            )
+        return {"success": True, "unanswered": rows[0]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("SUPPORT UNANSWERED UPDATE ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to update unanswered support question.",
+        ) from exc
+
+
+@router.get("/assistant/unanswered")
+async def list_unanswered_support_questions(
+    status: Optional[str] = Query(default="new"),
+    limit: int = Query(default=100, ge=1, le=200),
+    agent=Depends(get_support_agent),
+):
+    """List unanswered assistant questions for supervisor review."""
+
+    require_management_role(agent)
+    valid_statuses = {"new", "reviewed", "converted", "dismissed"}
+    if status is not None and status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid unanswered-question status.",
+        )
+
+    try:
+        query = (
+            get_admin_supabase()
+            .from_("support_unanswered")
+            .select("id,question,locale,channel,reason,best_match_score,faq_id,status,created_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if status is not None:
+            query = query.eq("status", status)
+        response = query.execute()
+        return {"unanswered": response.data or []}
+    except Exception as exc:
+        print("SUPPORT UNANSWERED LIST ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to load unanswered support questions.",
+        ) from exc

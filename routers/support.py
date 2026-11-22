@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
-from database import supabase
-from auth import get_authenticated_user
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from supabase import Client
+from auth import AuthenticatedContext, get_authenticated_context
+from database import get_admin_supabase
+from services.support_ai_service import answer_support_question
 
 
 # ============================================================
@@ -47,7 +51,7 @@ def get_user_id(user) -> str:
     return str(user_id)
 
 
-def get_user_role(user) -> str:
+def get_user_role(user, db: Client) -> str:
     """
     Get the user's role from the profiles table.
 
@@ -60,7 +64,7 @@ def get_user_role(user) -> str:
 
     try:
         response = (
-            supabase
+            db
             .from_("profiles")
             .select("role")
             .eq("id", user_id)
@@ -109,7 +113,7 @@ def get_user_role(user) -> str:
 
 @router.get("/categories")
 async def get_support_categories(
-    user=Depends(get_authenticated_user),
+    context: AuthenticatedContext = Depends(get_authenticated_context),
 ):
     """
     Return active customer support categories.
@@ -118,11 +122,12 @@ async def get_support_categories(
     and agricultural businesses.
     """
 
-    get_user_role(user)
+    user, db = context.user, context.db
+    get_user_role(user, db)
 
     try:
         response = (
-            supabase
+            db
             .from_("support_categories")
             .select(
                 "id,name,description,is_active,created_at"
@@ -156,7 +161,7 @@ async def get_support_categories(
 @router.post("/tickets")
 async def create_support_ticket(
     payload: dict,
-    user=Depends(get_authenticated_user),
+    context: AuthenticatedContext = Depends(get_authenticated_context),
 ):
     """
     Create a customer support ticket.
@@ -167,8 +172,9 @@ async def create_support_ticket(
     The client cannot choose another user's ID or role.
     """
 
+    user, db = context.user, context.db
     user_id = get_user_id(user)
-    user_role = get_user_role(user)
+    user_role = get_user_role(user, db)
 
     subject = str(
         payload.get("subject", "")
@@ -233,7 +239,7 @@ async def create_support_ticket(
     if category_id:
         try:
             category_response = (
-                supabase
+                db
                 .from_("support_categories")
                 .select("id")
                 .eq("id", category_id)
@@ -274,7 +280,7 @@ async def create_support_ticket(
 
     try:
         ticket_response = (
-            supabase
+            db
             .from_("support_tickets")
             .insert({
                 "user_id": user_id,
@@ -335,7 +341,7 @@ async def create_support_ticket(
 
     try:
         message_response = (
-            supabase
+            db
             .from_("support_messages")
             .insert({
                 "ticket_id": ticket["id"],
@@ -379,7 +385,7 @@ async def create_support_ticket(
 
         try:
             (
-                supabase
+                get_admin_supabase()
                 .from_("support_tickets")
                 .delete()
                 .eq("id", ticket["id"])
@@ -411,20 +417,21 @@ async def create_support_ticket(
 
 @router.get("/tickets")
 async def get_my_support_tickets(
-    user=Depends(get_authenticated_user),
+    context: AuthenticatedContext = Depends(get_authenticated_context),
 ):
     """
     Return support tickets belonging only to the
     authenticated user.
     """
 
+    user, db = context.user, context.db
     user_id = get_user_id(user)
 
-    get_user_role(user)
+    get_user_role(user, db)
 
     try:
         response = (
-            supabase
+            db
             .from_("support_tickets")
             .select(
                 """
@@ -478,7 +485,7 @@ async def get_my_support_tickets(
 @router.get("/tickets/{ticket_id}")
 async def get_support_ticket(
     ticket_id: str,
-    user=Depends(get_authenticated_user),
+    context: AuthenticatedContext = Depends(get_authenticated_context),
 ):
     """
     Return one support ticket and its messages.
@@ -486,9 +493,10 @@ async def get_support_ticket(
     A user can only access their own ticket.
     """
 
+    user, db = context.user, context.db
     user_id = get_user_id(user)
 
-    get_user_role(user)
+    get_user_role(user, db)
 
     # --------------------------------------------------------
     # GET TICKET
@@ -496,7 +504,7 @@ async def get_support_ticket(
 
     try:
         ticket_response = (
-            supabase
+            db
             .from_("support_tickets")
             .select(
                 """
@@ -549,7 +557,7 @@ async def get_support_ticket(
 
     try:
         messages_response = (
-            supabase
+            db
             .from_("support_messages")
             .select(
                 """
@@ -599,7 +607,7 @@ async def get_support_ticket(
 async def add_support_message(
     ticket_id: str,
     payload: dict,
-    user=Depends(get_authenticated_user),
+    context: AuthenticatedContext = Depends(get_authenticated_context),
 ):
     """
     Add a customer message to an existing support ticket.
@@ -607,8 +615,9 @@ async def add_support_message(
     The authenticated user must own the ticket.
     """
 
+    user, db = context.user, context.db
     user_id = get_user_id(user)
-    user_role = get_user_role(user)
+    user_role = get_user_role(user, db)
 
     message = str(
         payload.get("message", "")
@@ -626,7 +635,7 @@ async def add_support_message(
 
     try:
         ticket_response = (
-            supabase
+            db
             .from_("support_tickets")
             .select(
                 """
@@ -679,7 +688,7 @@ async def add_support_message(
 
     try:
         response = (
-            supabase
+            db
             .from_("support_messages")
             .insert({
                 "ticket_id": ticket_id,
@@ -726,3 +735,82 @@ async def add_support_message(
         "success": True,
         "message": created_message,
     }
+
+# ============================================================
+# AI CUSTOMER SUPPORT ASSISTANT
+# ============================================================
+
+class SupportAssistantMessage(BaseModel):
+    role: str = Field(..., min_length=1, max_length=20)
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+class SupportAssistantRequest(BaseModel):
+    messages: list[SupportAssistantMessage]
+    locale: str = Field(default="en", min_length=2, max_length=12)
+    channel: str = Field(default="voice", min_length=4, max_length=5)
+
+
+@router.post("/assistant")
+async def support_assistant(
+    payload: SupportAssistantRequest,
+    context: AuthenticatedContext = Depends(get_authenticated_context),
+):
+    """Answer an app-support question using approved FAQs only."""
+
+    user, db = context.user, context.db
+    get_user_role(user, db)
+
+    if not payload.messages or len(payload.messages) > 12:
+        raise HTTPException(
+            status_code=400,
+            detail="Send between 1 and 12 conversation messages.",
+        )
+
+    messages = [
+        {"role": item.role.strip().lower(), "content": item.content.strip()}
+        for item in payload.messages
+    ]
+
+    if any(item["role"] not in {"user", "assistant"} for item in messages):
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation roles must be user or assistant.",
+        )
+
+    if messages[-1]["role"] != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="The latest conversation message must be from the customer.",
+        )
+
+    locale = payload.locale.strip().lower()
+    if locale not in {"en", "lg"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Supported support-assistant languages are English and Luganda.",
+        )
+
+    channel = payload.channel.strip().lower()
+    if channel not in {"voice", "chat"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Channel must be voice or chat.",
+        )
+
+    try:
+        return await run_in_threadpool(
+            answer_support_question,
+            messages[-1]["content"],
+            messages[:-1],
+            locale,
+            channel,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        print("SUPPORT ASSISTANT ENDPOINT ERROR:", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="The support assistant is temporarily unavailable. Please use Call Support.",
+        ) from exc
