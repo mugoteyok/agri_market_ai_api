@@ -1,8 +1,6 @@
 
-from pydantic import BaseModel
-from typing import Optional, List
-
-
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
 # ============================================================
 # PRODUCT CREATE
 # ============================================================
@@ -96,6 +94,7 @@ class ProductCreate(BaseModel):
     # Optional manufacturer or brand.
 
     brand: Optional[str] = None
+    recommendation_tags: Dict[str, Any] = Field(default_factory=dict)
 
 
     # ========================================================
@@ -230,6 +229,7 @@ class ProductResponse(BaseModel):
     category: Optional[str] = None
 
     brand: Optional[str] = None
+    recommendation_tags: Optional[Dict[str, Any]] = None
 
     availability: Optional[str] = "in_stock"
 

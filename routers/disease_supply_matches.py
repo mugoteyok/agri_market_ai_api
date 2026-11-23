@@ -1,262 +1,185 @@
-"""Authenticated disease-to-supplier product matching endpoint.
-
-This router deliberately uses the existing public products catalogue and the
-existing disease_supply_recommendations rules. It does not create or mutate
-any database records.
-"""
-
+"""Authenticated, tag-driven disease-to-supplier product recommendations."""
 from functools import lru_cache
 import os
 import re
 from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import create_client
-
 from auth import get_authenticated_user
 
-
-router = APIRouter(
-    prefix="/recommendations",
-    tags=["Disease Supply Recommendations"],
+router = APIRouter(prefix="/recommendations", tags=["Disease Supply Recommendations"])
+MAX_TREATMENTS = 3
+MAX_TOOLS = 2
+MAX_PREVENTION = 2
+MAX_NUTRITION = 2
+SAFETY_NOTE = (
+    "Recommendations are catalogue matches, not treatment approvals. "
+    "For pesticides and fungicides, verify the active ingredient and the "
+    "product label's approved crop, target disease or pest, application rate, "
+    "pre-harvest interval and safety instructions before use. Follow local "
+    "agricultural guidance."
 )
-
+KNOWN_PATHOGENS = {
+    "coffee leaf rust": {"fungal"},
+    "fall armyworm": {"insect"},
+    "late blight": {"oomycete"},
+}
+PATHOGEN_ALIASES = {
+    "fungus": "fungal",
+    "fungi": "fungal",
+    "fungal pathogen": "fungal",
+    "fungal disease": "fungal",
+    "insect pest": "insect",
+    "insects": "insect",
+    "insect": "insect",
+    "oomycetes": "oomycete",
+    "water mold": "oomycete",
+    "water mould": "oomycete",
+}
 
 @lru_cache(maxsize=1)
 def _get_service_client():
-    """Return a server-only Supabase client using the service-role key."""
+    """Return a server-only Supabase client."""
     supabase_url = os.getenv("SUPABASE_URL")
     service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
     if not supabase_url or not service_role_key:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Disease-supply recommendations are not configured. "
-                "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the backend."
-            ),
-        )
-
+        raise HTTPException(status_code=503, detail="Disease-supply recommendations are not configured.")
     try:
         return create_client(supabase_url, service_role_key)
     except Exception as exc:
-        # Do not return configuration values or secret material to callers.
         print("Disease recommendation client initialization failed:", type(exc).__name__)
-        raise HTTPException(
-            status_code=503,
-            detail="The recommendation service is temporarily unavailable.",
-        ) from exc
-
+        raise HTTPException(status_code=503, detail="The recommendation service is temporarily unavailable.") from exc
 
 def _normalize(value: Any) -> str:
-    """Normalize case, punctuation and whitespace for deterministic matching."""
     text = str(value or "").lower()
-    text = re.sub(r"[^a-z0-9\s-]", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
+def _tag_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    elif isinstance(value, str):
+        values = re.split(r"[,;\n]", value)
+    else:
+        return []
+    return list({_normalize(item) for item in values if _normalize(item)})
 
-def _product_text(product: dict[str, Any]) -> str:
-    fields = (
-        product.get("product_name"),
-        product.get("category"),
-        product.get("brand"),
-        product.get("description"),
-        product.get("recommendation_tags"),
-    )
-    return _normalize(" ".join(str(value or "") for value in fields))
+def _get_tags(product: dict[str, Any]) -> dict[str, Any]:
+    tags = product.get("recommendation_tags")
+    return tags if isinstance(tags, dict) else {}
 
+def _tag_role(tags: dict[str, Any]) -> str:
+    return _normalize(tags.get("category"))
+
+def _tag_pathogens(tags: dict[str, Any]) -> set[str]:
+    return {PATHOGEN_ALIASES.get(value, value) for value in _tag_list(tags.get("pathogens"))}
+
+def _is_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _normalize(value) in {"true", "yes", "1", "on"}
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 def _is_listed_and_in_stock(product: dict[str, Any]) -> bool:
-    """Require an available listing and a stock state that is not sold out."""
-    status = _normalize(product.get("status"))
+    if _normalize(product.get("status")) != "available":
+        return False
+    if _safe_float(product.get("quantity")) <= 0:
+        return False
     availability = _normalize(product.get("availability"))
+    return availability not in {
+        "unavailable", "out of stock", "sold", "sold out", "inactive", "expired"
+    }
 
-    if status != "available":
+def _crop_matches(tags: dict[str, Any], crop_key: str, *, universal: bool = False) -> bool:
+    crops = _tag_list(tags.get("crop_types"))
+    if not crops:
+        return universal
+    return crop_key in crops
+
+def _pathogens_for_diagnosis(disease_key: str, rules: list[dict[str, Any]]) -> set[str]:
+    known = KNOWN_PATHOGENS.get(disease_key)
+    if known:
+        return set(known)
+    inferred = set()
+    for rule in rules:
+        category = _normalize(rule.get("category"))
+        if category in {"fungicide", "fungicides"}:
+            inferred.add("fungal")
+        elif category in {"pest control", "pesticide", "pesticides", "insect control"}:
+            inferred.add("insect")
+    return inferred
+
+def _is_treatment_rule(category: str) -> bool:
+    return _normalize(category) in {
+        "fungicide", "fungicides", "pest control", "pesticide", "pesticides", "insect control"
+    }
+
+def _is_ppe_rule(category: str) -> bool:
+    return _normalize(category) in {
+        "protective equipment", "personal protective equipment", "ppe", "safety equipment"
+    }
+
+def _is_sprayer_rule(category: str) -> bool:
+    return _normalize(category) in {"sprayer", "sprayers", "spraying equipment"}
+
+def _is_healthy_label(value: str) -> bool:
+    label = _normalize(value)
+    if re.search(r"\b(unhealthy|not healthy|not disease free)\b", label):
         return False
+    return label in {
+        "healthy", "healthy crop", "healthy leaf", "no disease",
+        "no disease detected", "no disease found", "disease free",
+        "normal", "no issues detected"
+    }
 
-    if availability in {
-        "unavailable",
-        "out of stock",
-        "out_of_stock",
-        "sold",
-        "sold out",
-        "sold_out",
-        "inactive",
-    }:
-        return False
-
-    if availability in {"in stock", "in_stock", "available"}:
-        return True
-
-    if "in stock" in availability or "available" in availability:
-        return True
-
-    # Some existing listings rely on quantity rather than an availability label.
-    quantity = product.get("quantity")
-    try:
-        return quantity is not None and float(quantity) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _contains_phrase(text: str, phrases: tuple[str, ...]) -> bool:
-    """Match whole normalized words/phrases, not incidental substrings."""
-    padded = f" {_normalize(text)} "
-    return any(f" {_normalize(phrase)} " in padded for phrase in phrases)
-
-
-def _matches_rule_category(
-    requested_category: str,
-    product: dict[str, Any],
-) -> bool:
-    """Conservative category matching; avoid cross-category false positives."""
-    rule_category = _normalize(requested_category)
-    product_category = _normalize(product.get("category"))
-    product_name = _normalize(product.get("product_name"))
-    brand = _normalize(product.get("brand"))
-    description = _normalize(product.get("description"))
-    tags = product.get("recommendation_tags") or {}
-
-    # Product name, brand and description can evidence crop-protection type.
-    # Category text is intentionally excluded from evidence: a generic
-    # "Pesticides" category alone does not prove that a product is an insecticide.
-    crop_protection_text = " ".join((product_name, brand, description))
-    structured_tag_text = _normalize(tags if isinstance(tags, str) else str(tags))
-
-    if rule_category in {"fungicide", "fungicides"}:
-        # The catalogue stores fungicides under the broad Pesticides category.
-        # Require an explicit fungicide/fungal term in the product itself.
-        return (
-            product_category in {"pesticides", "fungicide", "fungicides"}
-            and _contains_phrase(
-                crop_protection_text,
-                ("fungicide", "fungicides", "fungal"),
-            )
-        )
-
-    if rule_category in {"pest control", "pesticide", "pesticides", "insect control"}:
-        allowed_categories = {"", "pesticides", "pest control", "insect control"}
-        # Never classify a fungicide as pest control just because both are
-        # stored under the generic Pesticides category.
-        if _contains_phrase(crop_protection_text, ("fungicide", "fungicides", "fungal")):
-            return False
-        pest_evidence = _contains_phrase(
-            crop_protection_text,
-            (
-                "insecticide",
-                "insecticides",
-                "insect spray",
-                "insect",
-                "insects",
-                "armyworm",
-                "caterpillar",
-                "caterpillars",
-                "larva",
-                "larvae",
-                "pest control",
-            ),
-        )
-        return product_category in allowed_categories and pest_evidence
-
-    if rule_category in {"sprayer", "sprayers", "spraying equipment"}:
-        return (
-            product_category in {"sprayer", "sprayers"}
-            or _contains_phrase(product_name, ("sprayer", "sprayers", "knapsack"))
-        )
-
-    if rule_category in {
-        "protective equipment",
-        "personal protective equipment",
-        "ppe",
-        "safety equipment",
-    }:
-        explicit_ppe_categories = {
-            "protective equipment",
-            "personal protective equipment",
-            "ppe",
-            "safety equipment",
-        }
-        ppe_item_terms = (
-            "glove",
-            "gloves",
-            "mask",
-            "masks",
-            "goggle",
-            "goggles",
-            "respirator",
-            "respirators",
-            "coverall",
-            "coveralls",
-            "safety boot",
-            "safety boots",
-            "gumboot",
-            "gumboots",
-            "protective equipment",
-            "personal protective equipment",
-            "ppe",
-        )
-        # Deliberately do not scan long scraped descriptions here: generic
-        # phrases such as "safe payments" or "certified for safety" must not
-        # turn an irrigation pump or tractor into protective equipment.
-        return (
-            product_category in explicit_ppe_categories
-            or _contains_phrase(product_name, ppe_item_terms)
-            or _contains_phrase(brand, ppe_item_terms)
-            or _contains_phrase(structured_tag_text, ppe_item_terms)
-        )
-
-    # For future rule categories, require an exact normalized category match.
-    return bool(rule_category) and product_category == rule_category
-
-
-def _product_role_and_notice(rule_category: str) -> tuple[str, bool, str]:
-    normalized = _normalize(rule_category)
-
-    if normalized in {"fungicide", "fungicides", "pest control", "pesticide", "pesticides", "insect control"}:
-        return (
-            "crop_protection_candidate",
-            True,
-            (
-                "Category match only. Verify the active ingredient and the "
-                "product label's approved crop, target disease or pest, rate, "
-                "and safety instructions before use."
-            ),
-        )
-
-    if normalized in {"sprayer", "sprayers", "spraying equipment"}:
-        return (
-            "application_equipment",
-            False,
-            "Application equipment only; this product is not a disease treatment.",
-        )
-
-    if normalized in {"protective equipment", "personal protective equipment", "ppe"}:
-        return (
-            "protective_equipment_candidate",
-            False,
-            "Confirm the equipment type and protective specifications before use.",
-        )
-
-    return (
-        "farm_supply_category_match",
-        False,
-        "This is a category match, not a guarantee of agronomic suitability.",
+def _is_uncertain_label(value: str) -> bool:
+    label = _normalize(value)
+    unknown = {
+        "unknown", "uncertain", "inconclusive", "unclassified", "undetermined",
+        "pending", "processing", "insufficient data", "unable to determine",
+        "unable to identify", "not available", "n a", "no diagnosis", "error", "failed"
+    }
+    return label in unknown or bool(
+        re.search(r"\b(unknown|uncertain|inconclusive|unclassified|undetermined)\b", label)
     )
 
+def _diagnosis_mode(status: str, disease: str) -> str:
+    status_key = _normalize(status)
+    if status_key in {"healthy", "normal"} or _is_healthy_label(disease):
+        return "healthy"
+    if status_key in {
+        "uncertain", "unknown", "inconclusive", "unclassified",
+        "undetermined", "pending", "error", "failed"
+    } or _is_uncertain_label(disease):
+        return "uncertain"
+    return "disease"
+
+def _ranked(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            item["_score"],
+            _safe_float(item["_product"].get("rating")),
+            str(item["_product"].get("created_at") or ""),
+        ),
+        reverse=True,
+    )
 
 def _load_supplier_profiles(client, supplier_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """Load only the business contact fields needed for marketplace display."""
     if not supplier_ids:
         return {}
-
     response = (
         client.table("business_profiles")
         .select("supplier_id,business_name,phone_number,email,location,description")
         .in_("supplier_id", supplier_ids)
         .execute()
     )
-
-    profiles: dict[str, dict[str, Any]] = {}
+    profiles = {}
     for profile in response.data or []:
         supplier_id = str(profile.get("supplier_id") or "")
         if not supplier_id:
@@ -271,50 +194,126 @@ def _load_supplier_profiles(client, supplier_ids: list[str]) -> dict[str, dict[s
         }
     return profiles
 
+def _make_match(product: dict[str, Any], score: int, reason: str, section: str) -> dict[str, Any]:
+    return {
+        "_product": product,
+        "_score": score,
+        "_reason": reason,
+        "_section": section,
+    }
+
+def _serialize_product(match: dict[str, Any], profiles_by_supplier: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    product = match["_product"]
+    tags = _get_tags(product)
+    supplier_id = str(product.get("seller_id") or "")
+    profile = profiles_by_supplier.get(supplier_id)
+    section = match["_section"]
+    if section in {"treatment", "prevention"}:
+        role = "crop_protection_candidate" if section == "treatment" else "crop_prevention_candidate"
+        label_required = True
+        notice = (
+            "Supplier tags indicate a possible crop-protection match. "
+            "Verify the active ingredient and full product label for the "
+            "specific crop and target problem before use."
+        )
+    elif section == "tools":
+        tool_type = _normalize(tags.get("tool_type"))
+        if tool_type in {"sprayer", "sprayers"}:
+            role = "application_equipment"
+            notice = "Application equipment only; this product is not a disease treatment."
+        else:
+            role = "protective_equipment_candidate"
+            notice = "Confirm the equipment type and protective specifications before use."
+        label_required = False
+    else:
+        role = "crop_nutrition_candidate"
+        label_required = False
+        notice = "Check the product instructions and crop-specific nutrient requirements before application."
+    return {
+        "id": product.get("id"),
+        "product_name": product.get("product_name"),
+        "description": product.get("description"),
+        "category": product.get("category"),
+        "brand": product.get("brand"),
+        "quantity": product.get("quantity"),
+        "unit": product.get("unit"),
+        "price_per_unit": product.get("price_per_unit"),
+        "region": product.get("region"),
+        "image_url": product.get("image_url"),
+        "image_urls": product.get("image_urls"),
+        "availability": product.get("availability"),
+        "rating": product.get("rating"),
+        "seller_id": supplier_id or None,
+        "seller_type": product.get("seller_type"),
+        "product_type": product.get("product_type"),
+        "status": product.get("status"),
+        "supplier_location": product.get("supplier_location") or (profile or {}).get("location"),
+        "supplier": profile,
+        "product_role": role,
+        "label_verification_required": label_required,
+        "recommendation_notice": notice,
+        "recommendation_score": match["_score"],
+        "match_reason": match["_reason"],
+        "active_ingredient": tags.get("active_ingredient"),
+    }
+
+def _make_group(
+    category: str,
+    section: str,
+    reason: str,
+    priority: str,
+    matches: list[dict[str, Any]],
+    profiles: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    products = [_serialize_product(match, profiles) for match in matches]
+    return {
+        "category": category,
+        "section": section,
+        "priority": priority,
+        "reason": reason,
+        "products": products,
+        "product_count": len(products),
+        "match_status": "products_found" if products else "no_matching_stock",
+    }
 
 @router.get("/disease-supplies")
 def get_disease_supply_matches(
     crop: str = Query(..., min_length=2, max_length=80),
     disease: str = Query(..., min_length=2, max_length=120),
+    diagnosis_status: str = Query("disease", min_length=2, max_length=30),
     _user=Depends(get_authenticated_user),
 ):
-    """Return disease rule categories with matching, in-stock supplier items.
-
-    Authentication is required. The service-role key is used only on this
-    server-side route to read rule rows and supplier business profiles that are
-    intentionally not exposed through public RLS policies.
-    """
+    """Return strictly crop-matched, tag-driven supplier recommendations."""
     crop_key = _normalize(crop)
     disease_key = _normalize(disease)
-
-    if not crop_key or not disease_key:
-        raise HTTPException(status_code=422, detail="Crop and disease are required.")
-
+    mode = _diagnosis_mode(diagnosis_status, disease_key)
+    if not crop_key:
+        raise HTTPException(status_code=422, detail="Crop is required.")
+    if mode == "uncertain":
+        return {
+            "crop": crop_key,
+            "disease": disease_key,
+            "diagnosis_mode": "uncertain",
+            "recommendations": [],
+            "message": (
+                "The diagnosis is uncertain. Disease-specific crop-protection "
+                "products have not been recommended."
+            ),
+            "safety_note": SAFETY_NOTE,
+        }
     client = _get_service_client()
-
     try:
-        rules_response = (
-            client.table("disease_supply_recommendations")
-            .select("crop,disease,category,reason,priority")
-            .eq("crop", crop_key)
-            .eq("disease", disease_key)
-            .order("category")
-            .execute()
-        )
-        rules = rules_response.data or []
-
-        if not rules:
-            return {
-                "crop": crop_key,
-                "disease": disease_key,
-                "recommendations": [],
-                "message": "No configured supplier recommendation rules were found for this diagnosis.",
-                "safety_note": (
-                    "Do not select a pesticide solely from a diagnosis name. "
-                    "Use only products whose label is appropriate for the crop and target problem."
-                ),
-            }
-
+        rules = []
+        if mode == "disease":
+            rules_response = (
+                client.table("disease_supply_recommendations")
+                .select("crop,disease,category,reason,priority")
+                .eq("crop", crop_key)
+                .eq("disease", disease_key)
+                .order("category")
+                .execute()
+            )
+            rules = rules_response.data or []
         products_response = (
             client.table("products")
             .select(
@@ -329,90 +328,190 @@ def get_disease_supply_matches(
             .limit(500)
             .execute()
         )
-        available_products = [
-            product
-            for product in (products_response.data or [])
+        products = [
+            product for product in (products_response.data or [])
             if _is_listed_and_in_stock(product)
+            and isinstance(product.get("recommendation_tags"), dict)
+            and bool(product.get("recommendation_tags"))
         ]
+        treatment_matches = []
+        prevention_matches = []
+        nutrition_matches = []
+        tool_matches = []
+        target_pathogens = _pathogens_for_diagnosis(disease_key, rules)
 
-        matched_by_rule: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-        matched_seller_ids: set[str] = set()
+        if mode == "healthy":
+            for product in products:
+                tags = _get_tags(product)
+                if _tag_role(tags) == "nutrition" and _crop_matches(tags, crop_key):
+                    nutrition_matches.append(
+                        _make_match(product, 1, "Crop-specific nutrition product.", "nutrition")
+                    )
+            nutrition_matches = _ranked(nutrition_matches)[:MAX_NUTRITION]
+            supplier_ids = sorted({
+                str(match["_product"].get("seller_id") or "")
+                for match in nutrition_matches if match["_product"].get("seller_id")
+            })
+            profiles = _load_supplier_profiles(client, supplier_ids)
+            groups = []
+            if nutrition_matches:
+                groups.append(_make_group(
+                    "Nutrition", "nutrition",
+                    "Crop nutrition products for the identified crop. Follow the product instructions and soil or agronomy advice.",
+                    "medium", nutrition_matches, profiles,
+                ))
+            return {
+                "crop": crop_key,
+                "disease": disease_key,
+                "diagnosis_mode": "healthy",
+                "recommendations": groups,
+                "message": (
+                    "Only crop-matched nutrition products are shown."
+                    if groups else
+                    "No tagged, in-stock nutrition products were found for this crop."
+                ),
+                "safety_note": SAFETY_NOTE,
+            }
 
-        for rule in rules:
-            category = rule.get("category") or ""
-            matches = [
-                product
-                for product in available_products
-                if _matches_rule_category(category, product)
-            ]
-            matched_by_rule.append((rule, matches))
-            for product in matches:
-                seller_id = product.get("seller_id")
-                if seller_id:
-                    matched_seller_ids.add(str(seller_id))
+        rule_categories = [str(rule.get("category") or "") for rule in rules]
+        has_treatment_rule = any(_is_treatment_rule(category) for category in rule_categories)
+        has_ppe_rule = any(_is_ppe_rule(category) for category in rule_categories)
+        has_sprayer_rule = any(_is_sprayer_rule(category) for category in rule_categories)
 
-        profiles_by_supplier = _load_supplier_profiles(
-            client,
-            sorted(matched_seller_ids),
+        if has_treatment_rule:
+            for product in products:
+                tags = _get_tags(product)
+                if _tag_role(tags) != "treatment" or not _crop_matches(tags, crop_key):
+                    continue
+                if not str(tags.get("active_ingredient") or "").strip():
+                    continue
+                diseases = set(_tag_list(tags.get("treats_diseases")))
+                exact_match = disease_key in diseases
+                pathogen_match = bool(target_pathogens & _tag_pathogens(tags))
+                if exact_match:
+                    treatment_matches.append(_make_match(
+                        product, 10, "Exact crop and disease tag match.", "treatment"
+                    ))
+                elif pathogen_match:
+                    treatment_matches.append(_make_match(
+                        product, 6,
+                        "Same crop and pathogen type; verify the target-specific label.",
+                        "treatment",
+                    ))
+        treatment_matches = _ranked(treatment_matches)[:MAX_TREATMENTS]
+
+        for product in products:
+            tags = _get_tags(product)
+            if _tag_role(tags) != "preventive" or not _crop_matches(tags, crop_key):
+                continue
+            if not str(tags.get("active_ingredient") or "").strip():
+                continue
+            diseases = set(_tag_list(tags.get("treats_diseases")))
+            exact_match = disease_key in diseases
+            pathogen_match = bool(target_pathogens & _tag_pathogens(tags))
+            if exact_match:
+                prevention_matches.append(_make_match(
+                    product, 4,
+                    "Preventive product tagged for this crop and diagnosis.",
+                    "prevention",
+                ))
+            elif pathogen_match:
+                prevention_matches.append(_make_match(
+                    product, 2,
+                    "Preventive product tagged for the same crop and pathogen type.",
+                    "prevention",
+                ))
+        prevention_matches = _ranked(prevention_matches)[:MAX_PREVENTION]
+
+        for product in products:
+            tags = _get_tags(product)
+            if _tag_role(tags) == "nutrition" and _crop_matches(tags, crop_key):
+                nutrition_matches.append(_make_match(
+                    product, 1, "Crop-specific nutrition product.", "nutrition"
+                ))
+        nutrition_matches = _ranked(nutrition_matches)[:MAX_NUTRITION]
+
+        if has_ppe_rule:
+            for product in products:
+                tags = _get_tags(product)
+                tool_type = _normalize(tags.get("tool_type"))
+                if _tag_role(tags) != "tool" or tool_type not in {
+                    "protective equipment", "protective_equipment", "ppe"
+                }:
+                    continue
+                if _crop_matches(tags, crop_key, universal=True):
+                    tool_matches.append(_make_match(
+                        product, 3,
+                        "Protective equipment supporting safe product handling.",
+                        "tools",
+                    ))
+        if has_sprayer_rule:
+            for product in products:
+                tags = _get_tags(product)
+                if _tag_role(tags) != "tool":
+                    continue
+                if _normalize(tags.get("tool_type")) not in {"sprayer", "sprayers"}:
+                    continue
+                if _crop_matches(tags, crop_key, universal=True):
+                    tool_matches.append(_make_match(
+                        product, 2,
+                        "Spraying equipment for a recommended spray-based treatment.",
+                        "tools",
+                    ))
+        tool_matches.sort(
+            key=lambda match: (
+                1 if _normalize(_get_tags(match["_product"]).get("tool_type"))
+                in {"protective equipment", "protective_equipment", "ppe"} else 0,
+                match["_score"],
+                _safe_float(match["_product"].get("rating")),
+            ),
+            reverse=True,
         )
+        tool_matches = tool_matches[:MAX_TOOLS]
 
-        recommendations = []
-        for rule, matches in matched_by_rule:
-            category = rule.get("category") or "Recommended Supplies"
-            product_role, requires_label_check, product_notice = _product_role_and_notice(category)
-
-            response_products = []
-            for product in matches:
-                seller_id = str(product.get("seller_id") or "")
-                response_products.append(
-                    {
-                        "id": product.get("id"),
-                        "product_name": product.get("product_name"),
-                        "description": product.get("description"),
-                        "category": product.get("category"),
-                        "brand": product.get("brand"),
-                        "quantity": product.get("quantity"),
-                        "unit": product.get("unit"),
-                        "price_per_unit": product.get("price_per_unit"),
-                        "region": product.get("region"),
-                        "image_url": product.get("image_url"),
-                        "image_urls": product.get("image_urls"),
-                        "availability": product.get("availability"),
-                        "rating": product.get("rating"),
-                        "seller_id": seller_id or None,
-                        "supplier_location": (
-                            product.get("supplier_location")
-                            or (profiles_by_supplier.get(seller_id) or {}).get("location")
-                        ),
-                        "supplier": profiles_by_supplier.get(seller_id),
-                        "product_role": product_role,
-                        "label_verification_required": requires_label_check,
-                        "recommendation_notice": product_notice,
-                    }
-                )
-
-            recommendations.append(
-                {
-                    "category": category,
-                    "priority": rule.get("priority") or "medium",
-                    "reason": rule.get("reason") or "",
-                    "products": response_products,
-                    "product_count": len(response_products),
-                    "match_status": "products_found" if response_products else "no_matching_stock",
-                }
-            )
-
+        selected = treatment_matches + tool_matches + prevention_matches + nutrition_matches
+        supplier_ids = sorted({
+            str(match["_product"].get("seller_id") or "")
+            for match in selected if match["_product"].get("seller_id")
+        })
+        profiles = _load_supplier_profiles(client, supplier_ids)
+        groups = []
+        if treatment_matches:
+            groups.append(_make_group(
+                "Treatment", "treatment",
+                "Products tagged for this crop and disease, ranked by exact disease match before same-pathogen matches.",
+                "high", treatment_matches, profiles,
+            ))
+        if tool_matches:
+            groups.append(_make_group(
+                "Tools & Safety", "tools",
+                "Supporting application equipment and protective equipment. These products are not crop treatments.",
+                "medium", tool_matches, profiles,
+            ))
+        if prevention_matches:
+            groups.append(_make_group(
+                "Prevention", "prevention",
+                "Products tagged for preventive use on this crop and target problem.",
+                "medium", prevention_matches, profiles,
+            ))
+        if nutrition_matches:
+            groups.append(_make_group(
+                "Nutrition", "nutrition",
+                "Crop-specific nutrition products that may support crop management.",
+                "low", nutrition_matches, profiles,
+            ))
         return {
             "crop": crop_key,
             "disease": disease_key,
-            "recommendations": recommendations,
-            "safety_note": (
-                "Product category matches are not treatment approvals. For pesticides and fungicides, "
-                "verify the active ingredient and product label for the crop and target disease or pest "
-                "before recommending or applying the product."
+            "diagnosis_mode": "disease",
+            "recommendations": groups,
+            "message": (
+                "Recommendations are ranked using structured supplier tags."
+                if groups else
+                "No tagged, in-stock products matched this crop and diagnosis. Untagged products are excluded."
             ),
+            "safety_note": SAFETY_NOTE,
         }
-
     except HTTPException:
         raise
     except Exception as exc:

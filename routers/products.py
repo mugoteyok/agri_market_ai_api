@@ -386,6 +386,8 @@ async def create_product(
 
         "brand":
             product.brand,
+        "recommendation_tags":
+            product.recommendation_tags or {},
 
         "availability":
             product.availability or "in_stock",
