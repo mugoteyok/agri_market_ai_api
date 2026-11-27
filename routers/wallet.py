@@ -10,7 +10,6 @@ from database import supabase
 from auth import get_authenticated_user
 from schemas.wallet import (
     WalletCreate,
-    WalletEarning,
     WithdrawalCreate,
 )
 from services.mtn_service import (
@@ -338,77 +337,14 @@ async def update_supplier_receiving_number(
 
 
 # ============================================================
-# CREDIT FARMER WALLET
+# DISABLED WALLET CREDIT
 # POST /api/marketplace/wallet/credit
+# Credits must originate from verified marketplace settlement.
 # ============================================================
 
-@router.post("/wallet/credit")
-async def credit_wallet(
-    data: WalletEarning,
-    user=Depends(get_authenticated_user),
-):
-    role, _ = require_seller(user, data.farmer_id)
-
-    if role != "farmer":
-        raise HTTPException(
-            status_code=403,
-            detail="This endpoint is for farmer wallets.",
-        )
-
-    wallet = ensure_wallet(str(user.id), "farmer")
-    current_balance = float(wallet.get("balance") or 0)
-    new_balance = current_balance + float(data.amount)
-
-    update = (
-        supabase.table("wallets")
-        .update({
-            "balance": new_balance,
-            "updated_at": utc_now(),
-        })
-        .eq("id", wallet["id"])
-        .eq("seller_id", str(user.id))
-        .eq("seller_type", "farmer")
-        .execute()
-    )
-
-    if not update.data:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to update farmer wallet.",
-        )
-
-    transaction = (
-        supabase.table("transactions")
-        .insert({
-            "farmer_id": str(user.id),
-            "seller_id": str(user.id),
-            "seller_type": "farmer",
-            "amount": float(data.amount),
-            "type": "credit",
-            "status": "completed",
-            "reference_id": data.reference_id,
-            "description": data.description,
-            "created_at": utc_now(),
-        })
-        .execute()
-    )
-
-    if not transaction.data:
-        # A balance update may already have succeeded. Reconcile
-        # before retrying a credit if transaction insertion fails.
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Wallet balance was updated, but the credit "
-                "transaction could not be recorded. Reconciliation required."
-            ),
-        )
-
-    return {
-        "message": "Wallet credited successfully",
-        "new_balance": new_balance,
-        "transaction": transaction.data,
-    }
+@router.post("/wallet/credit", include_in_schema=False)
+async def credit_wallet_disabled(_user=Depends(get_authenticated_user)):
+    raise HTTPException(status_code=410, detail="Manual wallet credits are disabled. Credits must come from verified marketplace settlement.")
 
 
 # ============================================================
