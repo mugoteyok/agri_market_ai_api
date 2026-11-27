@@ -122,6 +122,38 @@ MTN_CURRENCY = os.getenv(
     "MTN_CURRENCY",
     "EUR"
 )
+MTN_ALLOW_SANDBOX_TEST_MSISDNS = os.getenv(
+    "MTN_ALLOW_SANDBOX_TEST_MSISDNS", "false",
+).strip().lower() in {"1", "true", "yes"}
+
+SANDBOX_COLLECTION_TEST_MSISDNS = frozenset({
+    "46733123450",  # FAILED
+    "46733123451",  # REJECTED
+    "46733123452",  # TIMEOUT
+    "56733123453",  # SUCCESSFUL
+    "46733123454",  # PENDING
+})
+
+def normalize_collection_msisdn(phone_number: str) -> str:
+    """Normalize Uganda MSISDNs and explicitly enabled MTN sandbox test numbers."""
+    if not isinstance(phone_number, str):
+        raise ValueError("Mobile Money phone number is required.")
+    normalized = phone_number.strip().replace(" ", "").replace("+", "")
+    if not normalized:
+        raise ValueError("Mobile Money phone number is required.")
+    if (
+        str(MTN_ENVIRONMENT).strip().lower() == "sandbox"
+        and MTN_ALLOW_SANDBOX_TEST_MSISDNS
+        and normalized in SANDBOX_COLLECTION_TEST_MSISDNS
+    ):
+        return normalized
+    if normalized.startswith("0"):
+        normalized = "256" + normalized[1:]
+    if not normalized.isdigit():
+        raise ValueError("Invalid Mobile Money phone number.")
+    if not normalized.startswith("256") or len(normalized) != 12:
+        raise ValueError("Use a valid Uganda Mobile Money number.")
+    return normalized
 
 
 # ============================================================
