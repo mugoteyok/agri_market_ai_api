@@ -6,6 +6,10 @@ import json
 import requests
 
 
+class MTNTransferOutcomeUnknown(Exception):
+    """Transfer request may have reached MTN; verify by reference."""
+
+
 # ============================================================
 # MTN CONFIGURATION
 # ============================================================
@@ -589,13 +593,10 @@ def get_payment_status(
 # ============================================================
 
 def transfer_money(
-
     amount: float,
-
     phone_number: str,
-
-    external_id: str
-
+    external_id: str,
+    reference_id: str | None = None,
 ):
 
     validate_disbursement_config()
@@ -622,9 +623,7 @@ def transfer_money(
         get_disbursement_access_token()
     )
 
-    reference_id = str(
-        uuid.uuid4()
-    )
+    reference_id = reference_id or str(uuid.uuid4())
 
     url = (
         f"{MTN_DISBURSEMENT_BASE_URL}"
@@ -695,11 +694,10 @@ def transfer_money(
         )
 
     except requests.RequestException as e:
-
-        raise Exception(
-            "Unable to connect to MTN "
-            f"transfer service: {str(e)}"
-        )
+        raise MTNTransferOutcomeUnknown(
+            "MTN transfer outcome is unknown for reference "
+            f"{reference_id}; verify status before retrying."
+        ) from e
 
     return {
 

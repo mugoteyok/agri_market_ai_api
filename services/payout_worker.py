@@ -1,316 +1,58 @@
-from datetime import datetime
-
-from database import supabase
+from database import get_admin_supabase
 from services.mtn_service import get_transfer_status
 
 
-
 def update_withdrawal_status(transaction_id: str):
-    """
-    Check MTN transfer status and update withdrawal lifecycle.
+    "Reconcile reserved withdrawals through the canonical database RPCs."
 
-    processing
-        |
-        ├── SUCCESSFUL → completed
-        |
-        └── FAILED → refund wallet + failed
-    """
-
-
-
-    # =====================================
-    # GET WITHDRAWAL RECORD
-    # =====================================
-
-
-    withdrawal_response = (
-
-        supabase
-        .table("withdrawals")
+    admin = get_admin_supabase()
+    response = (
+        admin.table("withdrawals")
         .select("*")
-        .eq(
-            "transaction_id",
-            transaction_id
-        )
+        .eq("transaction_id", transaction_id)
+        .limit(1)
         .execute()
-
     )
+    if not response.data:
+        return {"message": "Withdrawal not found"}
 
+    withdrawal = response.data[0]
+    current_status = (withdrawal.get("status") or "").strip().lower()
+    if current_status in {"completed", "failed"}:
+        return {"message": f"Withdrawal already {current_status}", "status": current_status}
 
-
-    if not withdrawal_response.data:
-
-
+    if withdrawal.get("funds_reserved") is not True:
         return {
-
-            "message":
-            "Withdrawal not found"
-
+            "message": "Legacy withdrawal has no active reservation; reconciliation required",
+            "status": current_status,
         }
 
-
-
-
-    withdrawal = withdrawal_response.data[0]
-
-
-
-    farmer_id = withdrawal["farmer_id"]
-
-    amount = withdrawal["amount"]
-
-
-
-
-    # =====================================
-    # CHECK MTN STATUS
-    # =====================================
-
-
-    mtn_status = get_transfer_status(
-
-        transaction_id
-
-    )
-
-
-
-    print(
-        "MTN STATUS RESPONSE:",
-        mtn_status
-    )
-
-
-
-    status = (
-
-        mtn_status
-        .get(
-            "status",
-            ""
-        )
-        .upper()
-
-    )
-
-
-
-
-
-    # =====================================
-    # SUCCESSFUL PAYMENT
-    # =====================================
-
-
-    if status == "SUCCESSFUL":
-
-
-
-        supabase.table("withdrawals").update({
-
-
-            "status":
-
-            "completed",
-
-
-
-            "financial_transaction_id":
-
-            mtn_status.get(
-                "financialTransactionId"
-            ),
-
-
-
-            "updated_at":
-
-            datetime.utcnow().isoformat()
-
-
-        }).eq(
-
-
-            "transaction_id",
-
-            transaction_id
-
-
-        ).execute()
-
-
-
-        return {
-
-
-            "message":
-
-            "Withdrawal completed",
-
-
-
-            "status":
-
-            "completed"
-
-
-        }
-
-
-
-
-
-
-
-    # =====================================
-    # FAILED PAYMENT
-    # =====================================
-
-
-    elif status == "FAILED":
-
-
-
-
-        wallet_response = (
-
-            supabase
-            .table("wallets")
-            .select("*")
-            .eq(
-                "farmer_id",
-                farmer_id
-            )
-            .execute()
-
-        )
-
-
-
-        if wallet_response.data:
-
-
-
-            wallet = wallet_response.data[0]
-
-
-
-            current_balance = (
-
-                wallet.get(
-                    "balance"
-                )
-                or 0
-
-            )
-
-
-
-            # Refund farmer
-
-
-            supabase.table("wallets").update({
-
-
-                "balance":
-
-                current_balance + amount,
-
-
-
-                "updated_at":
-
-                datetime.utcnow().isoformat()
-
-
-            }).eq(
-
-
-                "farmer_id",
-
-                farmer_id
-
-
-            ).execute()
-
-
-
-
-
-        # Update withdrawal
-
-
-        supabase.table("withdrawals").update({
-
-
-            "status":
-
-            "failed",
-
-
-
-            "updated_at":
-
-            datetime.utcnow().isoformat()
-
-
-        }).eq(
-
-
-            "transaction_id",
-
-            transaction_id
-
-
-        ).execute()
-
-
-
-
-        return {
-
-
-
-            "message":
-
-            "Withdrawal failed. Wallet refunded.",
-
-
-
-            "status":
-
-            "failed"
-
-
-        }
-
-
-
-
-
-
-
-    # =====================================
-    # STILL PROCESSING
-    # =====================================
-
-
-    else:
-
-
-
-        return {
-
-
-            "message":
-
-            "Withdrawal still processing",
-
-
-
-            "status":
-
-            "processing"
-
-
-        }
+    reference_id = withdrawal.get("mtn_reference_id")
+    if not reference_id:
+        return {"message": "Withdrawal MTN reference is missing", "status": "reconciliation_required"}
+
+    mtn_status = get_transfer_status(reference_id)
+    status = (mtn_status.get("status") or "").strip().upper()
+
+    if status in {"SUCCESSFUL", "SUCCESS"}:
+        result = admin.rpc(
+            "complete_wallet_withdrawal",
+            {
+                "p_transaction_id": transaction_id,
+                "p_financial_transaction_id": mtn_status.get("financialTransactionId"),
+            },
+        ).execute().data
+        return {"message": "Withdrawal completion processed", "status": "completed", "result": result}
+
+    if status in {"FAILED", "FAILURE"}:
+        reason = mtn_status.get("reason") or mtn_status.get("message") or "MTN confirmed transfer failure"
+        result = admin.rpc(
+            "release_wallet_withdrawal",
+            {
+                "p_transaction_id": transaction_id,
+                "p_failure_reason": str(reason)[:500],
+            },
+        ).execute().data
+        return {"message": "Withdrawal release processed", "status": "failed", "result": result}
+
+    return {"message": "Withdrawal still processing", "status": "processing"}
