@@ -13,6 +13,7 @@ from services.mtn_service import (
     get_payment_status,
     verify_collection_payment,
     apply_collection_payment_result,
+    normalize_collection_msisdn,
 )
 
 from services.notification_service import (
@@ -2209,67 +2210,17 @@ async def pay_order(
             ),
         )
 
-    # ========================================================
-    # NORMALIZE PHONE NUMBER
-    # ========================================================
-
-    phone_number = (
-        phone_number
-        .strip()
-        .replace(
-            " ",
-            "",
-        )
-        .replace(
-            "+",
-            "",
-        )
-    )
-
-    if phone_number.startswith("0"):
-
-        phone_number = (
-            "256"
-            + phone_number[1:]
-        )
-
-    # ========================================================
-    # BASIC PHONE VALIDATION
-    # ========================================================
-
-    if not phone_number.isdigit():
-
+    try:
+        phone_number = normalize_collection_msisdn(phone_number)
+    except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Invalid Mobile Money "
-                "phone number."
-            ),
+            detail=str(exc),
         )
 
-    if not phone_number.startswith("256"):
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Use a valid Uganda Mobile "
-                "Money number."
-            ),
-        )
-
-    if len(phone_number) != 12:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Use a valid Uganda Mobile "
-                "Money number."
-            ),
-        )
-
-    # ========================================================
+    # ============================================================
     # CREATE EXTERNAL PAYMENT ID
-    # ========================================================
+    # ============================================================
 
     payment_reference = str(
         uuid.uuid4()
