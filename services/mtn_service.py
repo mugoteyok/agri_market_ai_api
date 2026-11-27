@@ -2,6 +2,7 @@ import base64
 import os
 import uuid
 import json
+from decimal import Decimal, InvalidOperation
 
 import requests
 
@@ -784,3 +785,86 @@ def get_transfer_status(
         )
 
     return response.json()
+
+# ============================================================
+# VERIFY COLLECTION STATUS DETAILS
+#
+# A status lookup must match the order's stored external ID,
+# amount and configured MTN currency before the order can be
+# marked paid or failed.
+# ============================================================
+
+
+def apply_collection_payment_result(
+    order: dict,
+    provider_status: dict,
+    admin_client=None,
+) -> dict:
+    # Apply an MTN-final collection status through the atomic database RPC.
+    if not isinstance(order, dict) or not isinstance(provider_status, dict):
+        raise ValueError("MTN payment transition data is invalid.")
+
+    status = str(provider_status.get("status") or "").strip().upper()
+    if status not in {"SUCCESSFUL", "FAILED", "REJECTED"}:
+        return {
+            "processed": False,
+            "payment_status": str(order.get("payment_status") or "pending"),
+        }
+
+    # Verify transaction identity, amount, and currency before any state-changing RPC.
+    verify_collection_payment(order, provider_status)
+
+    external_id = str(order.get("payment_external_id") or "").strip()
+    if not external_id:
+        raise ValueError("Order payment externalId is missing.")
+
+    if admin_client is None:
+        from database import get_admin_supabase
+        admin_client = get_admin_supabase()
+
+    response = admin_client.rpc(
+        "apply_mtn_collection_result",
+        {
+            "p_order_id": order.get("id"),
+            "p_external_id": external_id,
+            "p_provider_status": status,
+        },
+    ).execute()
+
+    result = response.data
+    if isinstance(result, list):
+        result = result[0] if result else None
+    if not isinstance(result, dict):
+        raise RuntimeError("Payment transition RPC returned an invalid response.")
+    return result
+
+
+def verify_collection_payment(order: dict, provider_status: dict) -> None:
+    if not isinstance(order, dict) or not isinstance(provider_status, dict):
+        raise ValueError("MTN payment status response is invalid.")
+
+    expected_external_id = str(order.get("payment_external_id") or "").strip()
+    actual_external_id = str(provider_status.get("externalId") or "").strip()
+
+    if not expected_external_id or actual_external_id != expected_external_id:
+        raise ValueError("MTN externalId does not match the order.")
+
+    try:
+        expected_amount = Decimal(str(order.get("total_amount")))
+        actual_amount = Decimal(str(provider_status.get("amount")))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("MTN payment amount is missing or invalid.")
+
+    if (
+        not expected_amount.is_finite()
+        or not actual_amount.is_finite()
+        or expected_amount <= 0
+        or actual_amount != expected_amount
+    ):
+        raise ValueError("MTN payment amount does not match the order.")
+
+    expected_currency = str(MTN_CURRENCY or "").strip().upper()
+    actual_currency = str(provider_status.get("currency") or "").strip().upper()
+
+    if not expected_currency or actual_currency != expected_currency:
+        raise ValueError("MTN payment currency does not match the configured currency.")
