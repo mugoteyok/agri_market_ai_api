@@ -24,6 +24,7 @@ KNOWN_PATHOGENS = {
     "fall armyworm": {"insect"},
     "late blight": {"oomycete"},
 }
+KNOWN_PESTS = {"fall armyworm"}
 PATHOGEN_ALIASES = {
     "fungus": "fungal",
     "fungi": "fungal",
@@ -110,9 +111,27 @@ def _pathogens_for_diagnosis(disease_key: str, rules: list[dict[str, Any]]) -> s
         category = _normalize(rule.get("category"))
         if category in {"fungicide", "fungicides"}:
             inferred.add("fungal")
-        elif category in {"pest control", "pesticide", "pesticides", "insect control"}:
+        elif category in {"pest control", "insect control"}:
             inferred.add("insect")
     return inferred
+
+def _product_target_match(
+    tags: dict[str, Any],
+    target_key: str,
+    target_pathogens: set[str],
+    *,
+    require_exact_pest: bool = False,
+) -> str | None:
+    """Match a specific disease or pest; generic insect tags never identify a pest."""
+    if target_key in set(_tag_list(tags.get("treats_pests"))):
+        return "exact_pest"
+    if require_exact_pest:
+        return None
+    if target_key in set(_tag_list(tags.get("treats_diseases"))):
+        return "exact_disease"
+    if target_pathogens & _tag_pathogens(tags):
+        return "pathogen"
+    return None
 
 def _is_treatment_rule(category: str) -> bool:
     return _normalize(category) in {
@@ -374,6 +393,13 @@ def get_disease_supply_matches(
             }
 
         rule_categories = [str(rule.get("category") or "") for rule in rules]
+        requires_exact_pest = (
+            disease_key in KNOWN_PESTS
+            or any(
+                _normalize(category) in {"pest control", "insect control"}
+                for category in rule_categories
+            )
+        )
         has_treatment_rule = any(_is_treatment_rule(category) for category in rule_categories)
         has_ppe_rule = any(_is_ppe_rule(category) for category in rule_categories)
         has_sprayer_rule = any(_is_sprayer_rule(category) for category in rule_categories)
@@ -385,14 +411,19 @@ def get_disease_supply_matches(
                     continue
                 if not str(tags.get("active_ingredient") or "").strip():
                     continue
-                diseases = set(_tag_list(tags.get("treats_diseases")))
-                exact_match = disease_key in diseases
-                pathogen_match = bool(target_pathogens & _tag_pathogens(tags))
-                if exact_match:
+                target_match = _product_target_match(
+                    tags, disease_key, target_pathogens,
+                    require_exact_pest=requires_exact_pest,
+                )
+                if target_match == "exact_pest":
+                    treatment_matches.append(_make_match(
+                        product, 10, "Exact crop and pest tag match.", "treatment"
+                    ))
+                elif target_match == "exact_disease":
                     treatment_matches.append(_make_match(
                         product, 10, "Exact crop and disease tag match.", "treatment"
                     ))
-                elif pathogen_match:
+                elif target_match == "pathogen":
                     treatment_matches.append(_make_match(
                         product, 6,
                         "Same crop and pathogen type; verify the target-specific label.",
@@ -406,16 +437,23 @@ def get_disease_supply_matches(
                 continue
             if not str(tags.get("active_ingredient") or "").strip():
                 continue
-            diseases = set(_tag_list(tags.get("treats_diseases")))
-            exact_match = disease_key in diseases
-            pathogen_match = bool(target_pathogens & _tag_pathogens(tags))
-            if exact_match:
+            target_match = _product_target_match(
+                tags, disease_key, target_pathogens,
+                require_exact_pest=requires_exact_pest,
+            )
+            if target_match == "exact_pest":
+                prevention_matches.append(_make_match(
+                    product, 4,
+                    "Preventive product tagged for this crop and target pest.",
+                    "prevention",
+                ))
+            elif target_match == "exact_disease":
                 prevention_matches.append(_make_match(
                     product, 4,
                     "Preventive product tagged for this crop and diagnosis.",
                     "prevention",
                 ))
-            elif pathogen_match:
+            elif target_match == "pathogen":
                 prevention_matches.append(_make_match(
                     product, 2,
                     "Preventive product tagged for the same crop and pathogen type.",
@@ -431,7 +469,7 @@ def get_disease_supply_matches(
                 ))
         nutrition_matches = _ranked(nutrition_matches)[:MAX_NUTRITION]
 
-        if has_ppe_rule:
+        if has_ppe_rule and (treatment_matches or prevention_matches):
             for product in products:
                 tags = _get_tags(product)
                 tool_type = _normalize(tags.get("tool_type"))
@@ -445,7 +483,7 @@ def get_disease_supply_matches(
                         "Protective equipment supporting safe product handling.",
                         "tools",
                     ))
-        if has_sprayer_rule:
+        if has_sprayer_rule and any(_is_true(_get_tags(match["_product"]).get("spray_based")) for match in treatment_matches + prevention_matches):
             for product in products:
                 tags = _get_tags(product)
                 if _tag_role(tags) != "tool":
