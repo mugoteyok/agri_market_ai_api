@@ -2,11 +2,12 @@
 import re
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from database import supabase
+from database import get_admin_supabase
 from auth import get_authenticated_user
 from schemas.wallet import (
     WalletCreate,
@@ -15,6 +16,8 @@ from schemas.wallet import (
 from services.mtn_service import (
     transfer_money,
     get_transfer_status,
+    validate_disbursement_config,
+    MTNTransferOutcomeUnknown,
 )
 
 router = APIRouter()
@@ -75,7 +78,7 @@ def mask_mobile_number(value: str | None) -> str | None:
 
 def get_profile(user_id: str):
     response = (
-        supabase.table("profiles")
+        get_admin_supabase().table("profiles")
         .select("id, role, mobile_money_number")
         .eq("id", user_id)
         .maybe_single()
@@ -86,7 +89,7 @@ def get_profile(user_id: str):
 
 def get_wallet_record(seller_id: str, seller_type: str):
     response = (
-        supabase.table("wallets")
+        get_admin_supabase().table("wallets")
         .select("*")
         .eq("seller_id", seller_id)
         .eq("seller_type", seller_type)
@@ -112,7 +115,7 @@ def ensure_wallet(seller_id: str, seller_type: str):
         "updated_at": utc_now(),
     }
 
-    response = supabase.table("wallets").insert(wallet_data).execute()
+    response = get_admin_supabase().table("wallets").insert(wallet_data).execute()
 
     if not response.data:
         raise HTTPException(
@@ -308,7 +311,7 @@ async def update_supplier_receiving_number(
     wallet = ensure_wallet(seller_id, "supplier")
 
     update = (
-        supabase.table("wallets")
+        get_admin_supabase().table("wallets")
         .update({
             "mobile_money_number": phone_number,
             "updated_at": utc_now(),
@@ -350,10 +353,9 @@ async def credit_wallet_disabled(_user=Depends(get_authenticated_user)):
 # ============================================================
 # WITHDRAW MONEY
 # POST /api/marketplace/wallet/withdraw
-# Body: {"amount": 5000}
 #
-# Farmer: destination from profiles.mobile_money_number.
-# Supplier: destination from wallets.mobile_money_number.
+# Funds are reserved atomically before MTN submission.
+# The MTN reference is persisted before the transfer is sent.
 # ============================================================
 
 @router.post("/wallet/withdraw")
@@ -363,12 +365,10 @@ async def withdraw(
 ):
     seller_id = str(user.id)
     profile = get_profile(seller_id)
-
     if not profile:
         raise HTTPException(status_code=404, detail="Seller profile not found.")
 
     seller_type = (profile.get("role") or "").strip().lower()
-
     if seller_type not in ALLOWED_SELLER_TYPES:
         raise HTTPException(
             status_code=403,
@@ -376,20 +376,17 @@ async def withdraw(
         )
 
     try:
-        amount = float(data.amount)
-    except (TypeError, ValueError):
+        amount = Decimal(str(data.amount))
+    except (InvalidOperation, TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid withdrawal amount.")
 
-    if amount <= 0:
+    if not amount.is_finite() or amount <= 0:
         raise HTTPException(
             status_code=400,
-            detail="Withdrawal amount must be greater than zero.",
+            detail="Withdrawal amount must be a finite value greater than zero.",
         )
 
-    # Use the supplier wallet's saved number; preserve the farmer's
-    # existing profile-based destination.
     wallet = get_wallet_record(seller_id, seller_type)
-
     if not wallet:
         raise HTTPException(
             status_code=404,
@@ -401,7 +398,6 @@ async def withdraw(
         if seller_type == "supplier"
         else profile.get("mobile_money_number")
     )
-
     if not raw_number:
         message = (
             "Save a Mobile Money receiving number in your supplier wallet "
@@ -412,133 +408,195 @@ async def withdraw(
         raise HTTPException(status_code=400, detail=message)
 
     phone_number = normalize_uganda_mobile_number(raw_number)
-    balance = float(wallet.get("balance") or 0)
 
-    if amount > balance:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient balance. Available balance is UGX {balance:,.0f}.",
-        )
-
-    wallet_id = wallet.get("id")
-    if not wallet_id:
-        raise HTTPException(
-            status_code=500,
-            detail="Seller wallet is missing its primary key.",
-        )
-
-    transaction_id = str(uuid.uuid4())
-    now = utc_now()
-
-    withdrawal_data = {
-        "farmer_id": seller_id if seller_type == "farmer" else None,
-        "seller_id": seller_id,
-        "seller_type": seller_type,
-        "amount": amount,
-        "phone_number": phone_number,
-        "provider": "MTN",
-        "transaction_id": transaction_id,
-        "mtn_reference_id": None,
-        "status": "processing",
-        "created_at": now,
-    }
-
-    created = (
-        supabase.table("withdrawals")
-        .insert(withdrawal_data)
-        .execute()
-    )
-
-    if not created.data:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to create withdrawal record.",
-        )
-
-    # Once a payout request has been sent, a network exception does not
-    # prove MTN rejected it. Keep uncertain requests processing for
-    # reconciliation instead of falsely marking them failed.
+    # Validate credentials before reserving funds.
     try:
-        mtn_response = transfer_money(
-            amount=amount,
-            phone_number=phone_number,
-            external_id=transaction_id,
+        validate_disbursement_config()
+    except Exception as exc:
+        print("MTN disbursement configuration is unavailable:", str(exc))
+        raise HTTPException(
+            status_code=503,
+            detail="MTN disbursement is not configured. No funds were reserved.",
+        )
+
+    previous_balance = Decimal(str(wallet.get("balance") or 0))
+    transaction_id = str(uuid.uuid4())
+    mtn_reference_id = str(uuid.uuid4())
+
+    try:
+        result = (
+            get_admin_supabase()
+            .rpc(
+                "reserve_wallet_withdrawal",
+                {
+                    "p_seller_id": seller_id,
+                    "p_seller_type": seller_type,
+                    "p_amount": str(amount),
+                    "p_phone_number": phone_number,
+                    "p_transaction_id": transaction_id,
+                    "p_mtn_reference_id": mtn_reference_id,
+                },
+            )
+            .execute()
+            .data
         )
     except Exception as exc:
-        print("MTN initiation outcome uncertain:", str(exc))
+        error_text = str(exc).lower()
+        if "insufficient wallet balance" in error_text:
+            raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
+        if "duplicate key" in error_text or "unique constraint" in error_text:
+            raise HTTPException(
+                status_code=409,
+                detail="A withdrawal is already being processed. Check its status.",
+            )
+        print("Withdrawal reservation failed:", str(exc))
+        raise HTTPException(status_code=500, detail="Could not reserve withdrawal funds.")
+
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="Unexpected reservation response.")
+
+    reservation_state = result.get("result")
+    withdrawal_record = result.get("withdrawal") or {}
+
+    # Replays never submit another transfer to MTN.
+    if reservation_state in {"duplicate_request", "already_processing"}:
+        current_wallet = get_wallet_record(seller_id, seller_type) or wallet
+        current_balance = float(current_wallet.get("balance") or 0)
+        return {
+            "message": "An earlier withdrawal is already being processed. Check its status before retrying.",
+            "status": withdrawal_record.get("status", "processing"),
+            "transaction_id": withdrawal_record.get("transaction_id"),
+            "mtn_reference_id": withdrawal_record.get("mtn_reference_id"),
+            "amount": float(withdrawal_record.get("amount") or amount),
+            "seller_id": seller_id,
+            "seller_type": seller_type,
+            "previous_balance": current_balance,
+            "new_balance": current_balance,
+        }
+
+    if reservation_state != "reserved":
+        raise HTTPException(status_code=409, detail="Withdrawal funds could not be reserved.")
+
+    try:
+        mtn_response = transfer_money(
+            amount=float(amount),
+            phone_number=phone_number,
+            external_id=transaction_id,
+            reference_id=mtn_reference_id,
+        )
+    except MTNTransferOutcomeUnknown as exc:
+        # MTN may have received the request. Keep funds reserved.
+        print("MTN transfer outcome unknown:", transaction_id, str(exc))
+        current_wallet = get_wallet_record(seller_id, seller_type) or {}
+        return {
+            "message": "MTN confirmation is pending. Funds remain reserved; check withdrawal status before retrying.",
+            "status": "processing",
+            "transaction_id": transaction_id,
+            "mtn_reference_id": mtn_reference_id,
+            "amount": float(amount),
+            "seller_id": seller_id,
+            "seller_type": seller_type,
+            "previous_balance": float(previous_balance),
+            "new_balance": float(current_wallet.get("balance") or 0),
+            "reconciliation_required": True,
+        }
+    except Exception as exc:
+        # Token/configuration failures occur before the transfer POST.
+        try:
+            release = (
+                get_admin_supabase()
+                .rpc(
+                    "release_wallet_withdrawal",
+                    {
+                        "p_transaction_id": transaction_id,
+                        "p_failure_reason": "MTN payout could not be submitted",
+                    },
+                )
+                .execute()
+                .data
+            )
+            if not isinstance(release, dict) or release.get("result") not in {
+                "released", "already_released"
+            }:
+                raise RuntimeError("Unexpected release response")
+        except Exception as release_exc:
+            print("CRITICAL: failed to release withdrawal:", transaction_id, str(release_exc))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Withdrawal requires reconciliation. Reference: {transaction_id}",
+            )
+        print("MTN transfer could not be submitted:", str(exc))
         raise HTTPException(
             status_code=502,
-            detail=(
-                "The Mobile Money request could not be confirmed. "
-                "Check withdrawal status before attempting another withdrawal."
-            ),
+            detail="MTN payout could not be submitted. Reserved funds were restored.",
         )
 
     if not mtn_response.get("accepted"):
-        (
-            supabase.table("withdrawals")
-            .update({"status": "failed"})
-            .eq("transaction_id", transaction_id)
-            .eq("status", "processing")
-            .execute()
-        )
+        status_code = mtn_response.get("status_code")
+
+        # A server/timeout/rate-limit response may be ambiguous.
+        # Do not refund until the provider confirms the transfer failed.
+        if (
+            status_code is None
+            or not 400 <= status_code < 500
+            or status_code in {408, 409, 425, 429}
+        ):
+            current_wallet = get_wallet_record(seller_id, seller_type) or {}
+            return {
+                "message": "MTN returned an uncertain response. Funds remain reserved while the transfer is reconciled.",
+                "status": "processing",
+                "transaction_id": transaction_id,
+                "mtn_reference_id": mtn_reference_id,
+                "amount": float(amount),
+                "seller_id": seller_id,
+                "seller_type": seller_type,
+                "previous_balance": float(previous_balance),
+                "new_balance": float(current_wallet.get("balance") or 0),
+                "reconciliation_required": True,
+            }
+
+        try:
+            release = (
+                get_admin_supabase()
+                .rpc(
+                    "release_wallet_withdrawal",
+                    {
+                        "p_transaction_id": transaction_id,
+                        "p_failure_reason": f"MTN rejected transfer (HTTP {status_code})",
+                    },
+                )
+                .execute()
+                .data
+            )
+            if not isinstance(release, dict) or release.get("result") not in {
+                "released", "already_released"
+            }:
+                raise RuntimeError("Unexpected release response")
+        except Exception as exc:
+            print("CRITICAL: MTN rejection release failed:", transaction_id, str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Withdrawal requires reconciliation. Reference: {transaction_id}",
+            )
         raise HTTPException(
             status_code=502,
-            detail="Mobile Money withdrawal was not accepted by MTN.",
+            detail="MTN rejected the withdrawal. Reserved funds were restored.",
         )
 
-    mtn_reference_id = mtn_response.get("reference_id")
-
-    if not mtn_reference_id:
-        print(
-            "MTN accepted payout but returned no reference:",
-            transaction_id,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "MTN accepted the request but did not return a reference. "
-                "The withdrawal remains pending reconciliation."
-            ),
-        )
-
-    reference_update = (
-        supabase.table("withdrawals")
-        .update({
-            "mtn_reference_id": mtn_reference_id,
-            "status": "processing",
-        })
-        .eq("transaction_id", transaction_id)
-        .execute()
-    )
-
-    if not reference_update.data:
-        print(
-            "CRITICAL: MTN accepted payout but reference save failed:",
-            transaction_id,
-            mtn_reference_id,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "MTN accepted the withdrawal, but saving the reference failed. "
-                "Do not retry until this transaction is reconciled."
-            ),
-        )
-
+    current_wallet = get_wallet_record(seller_id, seller_type) or {}
     return {
         "message": "Withdrawal request accepted and is being processed.",
         "status": "processing",
         "seller_id": seller_id,
         "seller_type": seller_type,
-        "amount": amount,
+        "amount": float(amount),
         "mobile_number": phone_number,
         "provider": "MTN",
-        "previous_balance": balance,
-        "new_balance": balance,
+        "previous_balance": float(previous_balance),
+        "new_balance": float(current_wallet.get("balance") or 0),
         "transaction_id": transaction_id,
         "mtn_reference_id": mtn_reference_id,
-        "withdrawal": reference_update.data,
+        "withdrawal": withdrawal_record,
     }
 
 
@@ -552,19 +610,18 @@ async def confirm_withdrawal(
     transaction_id: str,
     user=Depends(get_authenticated_user),
 ):
-    withdrawal_response = (
-        supabase.table("withdrawals")
+    response = (
+        get_admin_supabase()
+        .table("withdrawals")
         .select("*")
         .eq("transaction_id", transaction_id)
         .limit(1)
         .execute()
     )
-
-    if not withdrawal_response.data:
+    if not response.data:
         raise HTTPException(status_code=404, detail="Withdrawal not found.")
 
-    withdrawal = withdrawal_response.data[0]
-
+    withdrawal = response.data[0]
     seller_id = withdrawal.get("seller_id") or withdrawal.get("farmer_id")
     seller_type = (
         withdrawal.get("seller_type")
@@ -572,19 +629,12 @@ async def confirm_withdrawal(
     ).strip().lower()
 
     if str(seller_id) != str(user.id):
-        raise HTTPException(
-            status_code=403,
-            detail="You can only check your own withdrawals.",
-        )
+        raise HTTPException(status_code=403, detail="You can only check your own withdrawals.")
 
     if seller_type not in ALLOWED_SELLER_TYPES:
-        raise HTTPException(
-            status_code=409,
-            detail="Withdrawal seller information is invalid.",
-        )
+        raise HTTPException(status_code=409, detail="Withdrawal seller information is invalid.")
 
     current_status = (withdrawal.get("status") or "").strip().lower()
-
     if current_status in {"completed", "failed"}:
         return {
             "message": f"Withdrawal already {current_status}.",
@@ -592,189 +642,108 @@ async def confirm_withdrawal(
             "transaction_id": transaction_id,
             "mtn_reference_id": withdrawal.get("mtn_reference_id"),
             "amount": withdrawal.get("amount"),
+            "funds_reserved": withdrawal.get("funds_reserved", False),
         }
 
-    mtn_reference_id = withdrawal.get("mtn_reference_id")
-    if not mtn_reference_id:
+    if withdrawal.get("funds_reserved") is not True:
         raise HTTPException(
             status_code=409,
-            detail="Withdrawal is missing its MTN reference and requires reconciliation.",
+            detail="This legacy withdrawal has no active funds reservation and cannot use the new workflow.",
         )
 
+    reference_id = withdrawal.get("mtn_reference_id")
+    if not reference_id:
+        raise HTTPException(status_code=409, detail="Withdrawal MTN reference is missing.")
+
     try:
-        mtn_status = get_transfer_status(mtn_reference_id)
+        mtn_status = get_transfer_status(reference_id)
     except Exception as exc:
         print("MTN status check error:", str(exc))
         raise HTTPException(
             status_code=502,
-            detail="Unable to confirm Mobile Money status. Try again later.",
+            detail="Unable to confirm Mobile Money status. Funds remain reserved.",
         )
 
-    transfer_status = (mtn_status.get("status") or "").strip().upper()
+    status = (mtn_status.get("status") or "").strip().upper()
 
-    if transfer_status in {"FAILED", "FAILURE"}:
-        (
-            supabase.table("withdrawals")
-            .update({"status": "failed"})
-            .eq("transaction_id", transaction_id)
-            .eq("status", "processing")
+    if status in {"SUCCESSFUL", "SUCCESS"}:
+        result = (
+            get_admin_supabase()
+            .rpc(
+                "complete_wallet_withdrawal",
+                {
+                    "p_transaction_id": transaction_id,
+                    "p_financial_transaction_id": mtn_status.get("financialTransactionId"),
+                },
+            )
             .execute()
+            .data
         )
-        return {
-            "message": "Mobile Money withdrawal failed.",
-            "status": "failed",
-            "transaction_id": transaction_id,
-            "mtn_reference_id": mtn_reference_id,
-            "amount": withdrawal.get("amount"),
-            "mtn_response": mtn_status,
-        }
+        if not isinstance(result, dict) or result.get("result") not in {
+            "completed", "already_completed"
+        }:
+            raise HTTPException(status_code=409, detail="Withdrawal completion requires reconciliation.")
 
-    if transfer_status != "SUCCESSFUL":
+        current_wallet = get_wallet_record(seller_id, seller_type) or {}
         return {
-            "message": "Mobile Money withdrawal is still being processed.",
-            "status": "processing",
-            "transaction_id": transaction_id,
-            "mtn_reference_id": mtn_reference_id,
-            "amount": withdrawal.get("amount"),
-            "mtn_status": transfer_status,
-            "mtn_response": mtn_status,
-        }
-
-    # A successful debit transaction means a previous confirmation
-    # already deducted the wallet. Do not deduct again.
-    existing = (
-        supabase.table("transactions")
-        .select("*")
-        .eq("reference_id", transaction_id)
-        .eq("type", "debit")
-        .limit(1)
-        .execute()
-    )
-
-    if existing.data:
-        (
-            supabase.table("withdrawals")
-            .update({"status": "completed"})
-            .eq("transaction_id", transaction_id)
-            .eq("status", "processing")
-            .execute()
-        )
-        return {
-            "message": "Withdrawal was already financially processed.",
+            "message": "Withdrawal completed successfully.",
             "status": "completed",
-            "transaction_id": transaction_id,
-            "mtn_reference_id": mtn_reference_id,
-            "transaction": existing.data[0],
-        }
-
-    wallet = get_wallet_record(str(seller_id), seller_type)
-    if not wallet:
-        raise HTTPException(
-            status_code=409,
-            detail="Seller wallet not found. Manual reconciliation is required.",
-        )
-
-    wallet_id = wallet.get("id")
-    balance = float(wallet.get("balance") or 0)
-    amount = float(withdrawal.get("amount") or 0)
-
-    if not wallet_id or amount <= 0:
-        raise HTTPException(
-            status_code=409,
-            detail="Wallet or withdrawal data is invalid. Reconciliation required.",
-        )
-
-    if amount > balance:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "MTN confirms the payout, but the wallet balance is insufficient "
-                "for reconciliation. Manual reconciliation is required."
-            ),
-        )
-
-    new_balance = balance - amount
-
-    # Conditional update reduces the risk of a concurrent duplicate
-    # deduction, but is not a substitute for a database transaction/RPC.
-    wallet_update = (
-        supabase.table("wallets")
-        .update({
-            "balance": new_balance,
-            "updated_at": utc_now(),
-        })
-        .eq("id", wallet_id)
-        .eq("seller_id", seller_id)
-        .eq("seller_type", seller_type)
-        .eq("balance", balance)
-        .execute()
-    )
-
-    if not wallet_update.data:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Wallet balance changed during confirmation. "
-                "Refresh and reconcile the withdrawal before retrying."
-            ),
-        )
-
-    transaction_response = (
-        supabase.table("transactions")
-        .insert({
-            "farmer_id": seller_id if seller_type == "farmer" else None,
             "seller_id": seller_id,
             "seller_type": seller_type,
-            "amount": amount,
-            "type": "debit",
-            "status": "completed",
-            "reference_id": transaction_id,
-            "description": (
-                "Supplier Mobile Money withdrawal"
-                if seller_type == "supplier"
-                else "Farmer Mobile Money withdrawal"
-            ),
-            "created_at": utc_now(),
-        })
-        .execute()
-    )
+            "amount": withdrawal.get("amount"),
+            "transaction_id": transaction_id,
+            "mtn_reference_id": reference_id,
+            "financial_transaction_id": mtn_status.get("financialTransactionId"),
+            "new_balance": float(current_wallet.get("balance") or 0),
+            "withdrawal": result.get("withdrawal"),
+            "mtn_response": mtn_status,
+        }
 
-    if not transaction_response.data:
-        print(
-            "CRITICAL: wallet deducted but debit transaction insert failed:",
-            transaction_id,
+    if status in {"FAILED", "FAILURE"}:
+        reason = (
+            mtn_status.get("reason")
+            or mtn_status.get("message")
+            or "MTN confirmed transfer failure"
         )
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "MTN payout succeeded and the wallet was updated, but the debit "
-                "transaction could not be recorded. Manual reconciliation required."
-            ),
+        result = (
+            get_admin_supabase()
+            .rpc(
+                "release_wallet_withdrawal",
+                {
+                    "p_transaction_id": transaction_id,
+                    "p_failure_reason": str(reason)[:500],
+                },
+            )
+            .execute()
+            .data
         )
+        if not isinstance(result, dict) or result.get("result") not in {
+            "released", "already_released"
+        }:
+            raise HTTPException(status_code=409, detail="Withdrawal release requires reconciliation.")
 
-    completed = (
-        supabase.table("withdrawals")
-        .update({"status": "completed"})
-        .eq("transaction_id", transaction_id)
-        .eq("status", "processing")
-        .execute()
-    )
+        current_wallet = get_wallet_record(seller_id, seller_type) or {}
+        return {
+            "message": "Withdrawal failed. Reserved funds were restored.",
+            "status": "failed",
+            "seller_id": seller_id,
+            "seller_type": seller_type,
+            "amount": withdrawal.get("amount"),
+            "transaction_id": transaction_id,
+            "mtn_reference_id": reference_id,
+            "new_balance": float(current_wallet.get("balance") or 0),
+            "withdrawal": result.get("withdrawal"),
+            "mtn_response": mtn_status,
+        }
 
     return {
-        "message": "Withdrawal completed successfully.",
-        "status": "completed",
-        "seller_id": seller_id,
-        "seller_type": seller_type,
-        "amount": amount,
-        "mobile_number": withdrawal.get("phone_number"),
-        "provider": withdrawal.get("provider"),
-        "previous_balance": balance,
-        "new_balance": new_balance,
+        "message": "Mobile Money withdrawal is still being processed.",
+        "status": "processing",
         "transaction_id": transaction_id,
-        "mtn_reference_id": mtn_reference_id,
-        "withdrawal": completed.data,
-        "transaction": transaction_response.data,
-        "mtn_response": mtn_status,
+        "mtn_reference_id": reference_id,
+        "amount": withdrawal.get("amount"),
+        "mtn_status": status,
+        "funds_reserved": True,
     }
 
 
@@ -797,7 +766,7 @@ async def transactions(
         )
 
     response = (
-        supabase.table("transactions")
+        get_admin_supabase().table("transactions")
         .select("*")
         .eq("farmer_id", farmer_id)
         .order("created_at", desc=True)
@@ -820,7 +789,7 @@ async def seller_transactions(
     role, _ = require_seller(user, seller_id, seller_type)
 
     query = (
-        supabase.table("transactions")
+        get_admin_supabase().table("transactions")
         .select("*")
         .eq("seller_id", str(user.id))
         .eq("seller_type", role)
