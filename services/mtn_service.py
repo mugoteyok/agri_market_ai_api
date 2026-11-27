@@ -129,9 +129,10 @@ MTN_ALLOW_SANDBOX_TEST_MSISDNS = os.getenv(
 SANDBOX_COLLECTION_TEST_MSISDNS = frozenset({
     "46733123450",  # FAILED
     "46733123451",  # REJECTED
-    "46733123452",  # TIMEOUT
-    "56733123453",  # SUCCESSFUL
-    "46733123454",  # PENDING
+    "46733123452",  # EXPIRED
+    "46733123453",  # ONGOING
+    "46733123454",  # DELAYED
+    "56733123453",  # SUCCESSFUL (legacy community test number)
 })
 
 def normalize_collection_msisdn(phone_number: str) -> str:
