@@ -9,8 +9,9 @@ class SandboxMsisdnTests(TestCase):
         "46733123450",
         "46733123451",
         "46733123452",
-        "56733123453",
+        "46733123453",
         "46733123454",
+        "56733123453",
     }
 
     def test_all_documented_sandbox_numbers_are_allowed_when_enabled(self):
