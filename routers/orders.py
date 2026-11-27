@@ -11,6 +11,8 @@ from schemas.payment import PaymentRequest
 from services.mtn_service import (
     request_payment,
     get_payment_status,
+    verify_collection_payment,
+    apply_collection_payment_result,
 )
 
 from services.notification_service import (
@@ -1924,135 +1926,73 @@ async def cancel_order(
         )
 
     # ========================================================
-    # PREVENT CANCELLING COMPLETED ORDER
+    # PREVENT CANCELLING COMPLETED OR PAID ORDERS
     # ========================================================
 
-    if order.get("order_status") == "completed":
+    if str(order.get("payment_status") or "").lower() == "paid":
+        raise HTTPException(
+            status_code=409,
+            detail="A paid order cannot be cancelled. A refund requires a separate process.",
+        )
 
+    if str(order.get("order_status") or "").lower() == "completed":
         raise HTTPException(
             status_code=400,
-            detail=(
-                "A completed order cannot "
-                "be cancelled."
-            ),
+            detail="A completed order cannot be cancelled.",
         )
 
     # ========================================================
     # ALREADY CANCELLED
     # ========================================================
 
-    if order.get("order_status") == "cancelled":
-
+    if str(order.get("order_status") or "").lower() == "cancelled":
         return order
 
     # ========================================================
-    # RELEASE RESERVED STOCK
+    # ATOMIC SERVER-SIDE CANCELLATION AND STOCK RELEASE
     # ========================================================
 
-    if (
-        order.get("stock_reserved")
-        and not order.get("stock_released")
-    ):
-
-        try:
-
-            release_response = (
-                supabase
-                .rpc(
-                    "release_reserved_stock",
-                    {
-
-                        "p_order_id":
-                            order_id,
-
-                        "p_payment_status":
-                            order.get(
-                                "payment_status"
-                            ),
-
-                    },
-                )
-                .execute()
-            )
-
-        except Exception as e:
-
-            print(
-                "MANUAL CANCEL STOCK RELEASE ERROR:",
-                str(e),
-            )
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Order could not be cancelled "
-                    "because reserved stock could "
-                    "not be released."
-                ),
-            )
-
-        if not release_response.data:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Reserved stock could not "
-                    "be released."
-                ),
-            )
-
-        updated_response = (
-            supabase
-            .table("orders")
-            .select("*")
-            .eq(
-                "id",
-                order_id,
+    try:
+        cancel_response = (
+            get_admin_supabase()
+            .rpc(
+                "cancel_order_and_release_stock",
+                {"p_order_id": order_id},
             )
             .execute()
         )
-
-        if not updated_response.data:
-
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Order was cancelled but "
-                    "could not be retrieved."
-                ),
-            )
-
-        updated_order = updated_response.data[0]
-
-    else:
-
-        update_response = (
-            supabase
-            .table("orders")
-            .update({
-
-                "order_status":
-                    "cancelled",
-
-                "status":
-                    "cancelled",
-
-            })
-            .eq(
-                "id",
-                order_id,
-            )
-            .execute()
+    except Exception as e:
+        print("ORDER CANCELLATION RPC ERROR:", str(e))
+        raise HTTPException(
+            status_code=409,
+            detail="Order state changed or cancellation needs reconciliation. Refresh the order before retrying.",
         )
 
-        if not update_response.data:
+    cancel_result = cancel_response.data
+    if isinstance(cancel_result, list):
+        cancel_result = cancel_result[0] if cancel_result else None
 
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to cancel order",
-            )
+    if not isinstance(cancel_result, dict) or not cancel_result.get("cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail="Order cancellation was not confirmed by the database.",
+        )
 
-        updated_order = update_response.data[0]
+    updated_response = (
+        get_admin_supabase()
+        .table("orders")
+        .select("*")
+        .eq("id", order_id)
+        .execute()
+    )
+
+    if not updated_response.data:
+        raise HTTPException(
+            status_code=500,
+            detail="Order was cancelled but could not be retrieved.",
+        )
+
+    updated_order = updated_response.data[0]
 
     # ========================================================
     # NOTIFY BUYER
@@ -2697,6 +2637,20 @@ async def check_payment_status(
             ),
         )
 
+    # Verify that MTN's authoritative status response belongs
+    # to this exact order before changing payment or stock state.
+    try:
+        verify_collection_payment(order, mtn_status)
+    except ValueError as e:
+        print("MTN PAYMENT VERIFICATION MISMATCH:", str(e))
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "MTN payment details do not match this order. "
+                "Payment remains pending and requires reconciliation."
+            ),
+        )
+
     # ========================================================
     # READ MTN STATUS
     # ========================================================
@@ -2714,40 +2668,36 @@ async def check_payment_status(
 
     if mtn_result == "SUCCESSFUL":
 
-        paid_at = utc_now()
-
-        update_response = (
-            supabase
-            .table("orders")
-            .update({
-
-                "payment_status":
-                    "paid",
-
-                "payment_method":
-                    "Mobile Money",
-
-                "paid_at":
-                    paid_at,
-
-            })
-            .eq(
-                "id",
-                order_id,
+        try:
+            transition = apply_collection_payment_result(
+                order,
+                mtn_status,
+                get_admin_supabase(),
             )
-            .execute()
-        )
-
-        if not update_response.data:
-
+        except Exception as e:
+            print("MTN SUCCESS TRANSITION RPC ERROR:", str(e))
             raise HTTPException(
-                status_code=500,
-                detail=(
-                    "MTN payment was successful "
-                    "but the order could not be "
-                    "updated."
-                ),
+                status_code=502,
+                detail="MTN confirmed payment, but order state reconciliation is required.",
             )
+
+        if not transition.get("processed"):
+            raise HTTPException(
+                status_code=409,
+                detail="MTN payment was confirmed but the order transition was not applied.",
+            )
+
+        if not transition.get("newly_paid"):
+            return {
+                "order_id": order_id,
+                "payment_status": transition.get("payment_status", "paid"),
+                "payment_reconciliation_required": bool(
+                    transition.get("reconciliation_required")
+                ),
+                "message": "Payment state was already processed.",
+            }
+
+        paid_at = utc_now()
 
         # ====================================================
         # PAYMENT SUCCESS NOTIFICATIONS
@@ -2851,21 +2801,19 @@ async def check_payment_status(
             )
 
         return {
-
-            "order_id":
-                order_id,
-
-            "payment_status":
-                "paid",
-
-            "mtn_status":
-                mtn_result,
-
-            "stock_released":
-                False,
-
-            "message":
-                "Payment confirmed successfully.",
+            "order_id": order_id,
+            "payment_status": "paid",
+            "mtn_status": mtn_result,
+            "stock_released": bool(order.get("stock_released")),
+            "payment_reconciliation_required": bool(
+                transition.get("reconciliation_required")
+            ),
+            "payment_reconciliation_reason": transition.get("reconciliation_reason"),
+            "message": (
+                "Payment confirmed. Manual reconciliation is required."
+                if transition.get("reconciliation_required")
+                else "Payment confirmed successfully."
+            ),
         }
 
     # ========================================================
@@ -2878,61 +2826,36 @@ async def check_payment_status(
     ]:
 
         try:
-
-            release_response = (
-                supabase
-                .rpc(
-                    "release_reserved_stock",
-                    {
-                        "p_order_id":
-                            order_id,
-
-                        "p_payment_status":
-                            "failed",
-                    },
-                )
-                .execute()
+            transition = apply_collection_payment_result(
+                order,
+                mtn_status,
+                get_admin_supabase(),
             )
-
         except Exception as e:
-
-            print(
-                "FAILED PAYMENT STOCK RELEASE ERROR:",
-                str(e),
-            )
-
+            print("MTN FAILURE TRANSITION RPC ERROR:", str(e))
             raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Payment failed, but reserved "
-                    "stock could not be released."
-                ),
+                status_code=502,
+                detail="MTN confirmed payment failure, but order state reconciliation is required.",
             )
 
-        if not release_response.data:
-
+        if not transition.get("processed"):
             raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Payment failed, but the order "
-                    "could not be released."
-                ),
+                status_code=409,
+                detail="MTN payment failure was confirmed but the order transition was not applied.",
             )
 
-        result = release_response.data
+        newly_failed = bool(transition.get("newly_failed"))
+        stock_released = bool(transition.get("stock_released"))
 
-        if isinstance(result, dict):
+        if not newly_failed:
+            return {
+                "order_id": order_id,
+                "payment_status": transition.get("payment_status", "failed"),
+                "stock_released": stock_released,
+                "already_released": bool(transition.get("already_released")),
+                "message": "Payment failure was already processed.",
+            }
 
-            stock_released = result.get(
-                "released",
-                False,
-            )
-
-        else:
-
-            stock_released = False
-
-        # ====================================================
         # FAILED PAYMENT NOTIFICATIONS
         # ====================================================
 

@@ -1,480 +1,302 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
-from database import supabase
-from services.notification_service import (
-    notify_seller,
-    notify_buyer,
+
+from database import get_admin_supabase
+from services.mtn_service import (
+    get_payment_status,
+    verify_collection_payment,
+    apply_collection_payment_result,
 )
-from datetime import datetime
+from services.notification_service import (
+    notify_buyer,
+    notify_seller,
+)
 
 
 router = APIRouter()
 
 
 def utc_now():
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
-@router.post("/mtn/callback")
+def _callback_response(processed: bool, message: str, **extra):
+    return {
+        "received": True,
+        "processed": processed,
+        "message": message,
+        **extra,
+    }
+
+
+def _notify_success(order: dict, payment_status: dict, paid_at: str):
+    buyer_id = order.get("buyer_id")
+    seller_id = order.get("seller_id")
+    product_name = order.get("crop") or "Marketplace product"
+
+    data = {
+        "event": "payment_successful",
+        "order_id": order.get("id"),
+        "product_id": order.get("product_id"),
+        "product_name": product_name,
+        "quantity": order.get("quantity"),
+        "total_amount": order.get("total_amount"),
+        "payment_status": "paid",
+        "payment_method": "Mobile Money",
+        "paid_at": paid_at,
+        "mtn_status": payment_status.get("status"),
+        "financial_transaction_id": payment_status.get(
+            "financialTransactionId"
+        ),
+    }
+
+    if buyer_id:
+        notify_buyer(
+            buyer_id=buyer_id,
+            notification_type="payment",
+            title="Payment successful",
+            message=f"Your payment for {product_name} was successful.",
+            data=data,
+        )
+
+    if seller_id:
+        notify_seller(
+            seller_id=seller_id,
+            notification_type="payment",
+            title="Order payment received",
+            message=f"Payment has been received for your {product_name} order.",
+            data=data,
+        )
+
+
+def _notify_failure(order: dict, payment_status: dict):
+    buyer_id = order.get("buyer_id")
+    seller_id = order.get("seller_id")
+    product_name = order.get("crop") or "Marketplace product"
+
+    data = {
+        "event": "payment_failed",
+        "order_id": order.get("id"),
+        "product_id": order.get("product_id"),
+        "product_name": product_name,
+        "order_status": "cancelled",
+        "payment_status": "failed",
+        "mtn_status": payment_status.get("status"),
+        "financial_transaction_id": payment_status.get(
+            "financialTransactionId"
+        ),
+    }
+
+    if buyer_id:
+        notify_buyer(
+            buyer_id=buyer_id,
+            notification_type="payment",
+            title="Payment failed",
+            message=(
+                f"Your payment for {product_name} was not successful. "
+                "The order has been cancelled."
+            ),
+            data=data,
+        )
+
+    if seller_id:
+        notify_seller(
+            seller_id=seller_id,
+            notification_type="order_status",
+            title="Order cancelled",
+            message=(
+                f"The order for {product_name} was cancelled because "
+                "payment was not successful."
+            ),
+            data=data,
+        )
+
+
+@router.api_route("/mtn/callback", methods=["POST", "PUT"])
 async def mtn_callback(request: Request):
-
-    # ========================================================
-    # READ MTN CALLBACK
-    # ========================================================
-
+    # Treat the callback as a notification only. Never trust its
+    # status/amount/currency as authoritative.
     try:
         payload = await request.json()
+    except Exception:
+        return _callback_response(False, "Invalid callback JSON.")
 
-    except Exception as e:
+    if not isinstance(payload, dict):
+        return _callback_response(False, "Invalid callback payload.")
 
-        print(
-            "MTN CALLBACK JSON ERROR:",
-            str(e),
-        )
-
-        return {
-            "received": False,
-            "message": "Invalid callback payload",
-        }
-
-    print("========== MTN CALLBACK ==========")
-    print("PAYLOAD:", payload)
-    print("==================================")
-
-    # ========================================================
-    # MTN CALLBACK FIELDS
-    #
-    # RequestToPay callbacks contain information equivalent
-    # to the transaction status response.
-    # ========================================================
-
-    mtn_status = str(
-        payload.get("status")
-        or ""
-    ).upper()
-
-    external_id = (
+    external_id = str(
         payload.get("externalId")
         or payload.get("externalTransactionId")
-    )
-
-    financial_transaction_id = (
-        payload.get("financialTransactionId")
-    )
-
-    print(
-        "MTN CALLBACK STATUS:",
-        mtn_status,
-    )
-
-    print(
-        "MTN CALLBACK EXTERNAL ID:",
-        external_id,
-    )
-
-    print(
-        "MTN FINANCIAL TRANSACTION ID:",
-        financial_transaction_id,
-    )
-
-    # ========================================================
-    # WE REQUIRE THE EXTERNAL ID
-    #
-    # In our payment flow, this is Agri AI Assist's internal
-    # payment ID.
-    #
-    # IMPORTANT:
-    #
-    # We currently generate payment_reference in orders.py
-    # and send it to MTN as externalId.
-    #
-    # Therefore we can use externalId to locate the order.
-    # ========================================================
+        or ""
+    ).strip()
 
     if not external_id:
+        return _callback_response(False, "Callback externalId is missing.")
 
-        print(
-            "MTN CALLBACK ERROR: "
-            "externalId missing."
+    admin = get_admin_supabase()
+
+    try:
+        order_response = (
+            admin.table("orders")
+            .select("*")
+            .eq("payment_external_id", external_id)
+            .limit(1)
+            .execute()
         )
+    except Exception as exc:
+        print("MTN CALLBACK ORDER LOOKUP ERROR:", str(exc))
+        return _callback_response(False, "Unable to locate payment order.")
 
-        return {
-            "received": True,
-            "processed": False,
-            "message": "externalId missing",
-        }
+    if not order_response.data:
+        return _callback_response(False, "Order not found.")
 
-    # ========================================================
-    # FIND ORDER
-    #
-    # payment_reference currently stores the MTN X-Reference-Id,
-    # NOT externalId.
-    #
-    # Therefore we first try to locate the order using the
-    # external ID.
-    #
-    # This requires storing the external ID separately.
-    # ========================================================
-
-    response = (
-        supabase
-        .table("orders")
-        .select("*")
-        .eq(
-            "payment_external_id",
-            external_id,
-        )
-        .execute()
-    )
-
-    if not response.data:
-
-        print(
-            "MTN CALLBACK: "
-            "No order found for externalId:",
-            external_id,
-        )
-
-        return {
-            "received": True,
-            "processed": False,
-            "message": "Order not found",
-        }
-
-    order = response.data[0]
-
+    order = order_response.data[0]
     order_id = order.get("id")
 
-    print(
-        "MTN CALLBACK ORDER:",
-        order_id,
-    )
+    current_payment_status = str(
+        order.get("payment_status") or ""
+    ).strip().lower()
 
-    # ========================================================
-    # IDEMPOTENCY
-    #
-    # MTN may only send the callback once, but our endpoint
-    # should still be safe if the same request is delivered
-    # more than once.
-    # ========================================================
+    if current_payment_status == "paid":
+        return _callback_response(
+            True,
+            "Payment already processed.",
+            payment_status="paid",
+        )
 
-    if order.get("payment_status") == "paid":
+    payment_reference = str(
+        order.get("payment_reference") or ""
+    ).strip()
 
-        return {
-            "received": True,
-            "processed": True,
-            "message": "Payment already processed",
-        }
+    if not payment_reference:
+        return _callback_response(
+            False,
+            "Saved MTN payment reference is missing.",
+            reconciliation_required=True,
+        )
 
-    # ========================================================
-    # SUCCESSFUL
-    # ========================================================
+    # Use the MTN reference saved before initiation to retrieve the
+    # authoritative provider status.
+    try:
+        provider_status = get_payment_status(payment_reference)
+    except Exception as exc:
+        print("MTN CALLBACK STATUS LOOKUP ERROR:", str(exc))
+        return _callback_response(
+            False,
+            "MTN payment status could not be verified.",
+            reconciliation_required=True,
+        )
 
-    if mtn_status == "SUCCESSFUL":
+    try:
+        verify_collection_payment(order, provider_status)
+    except ValueError as exc:
+        print("MTN CALLBACK PAYMENT MISMATCH:", str(exc))
+        return _callback_response(
+            False,
+            "MTN payment details do not match this order.",
+            reconciliation_required=True,
+        )
+
+    authoritative_status = str(
+        provider_status.get("status") or ""
+    ).strip().upper()
+
+    if authoritative_status == "SUCCESSFUL":
+        try:
+            transition = apply_collection_payment_result(
+                order,
+                provider_status,
+                admin,
+            )
+        except Exception as exc:
+            print("MTN CALLBACK SUCCESS TRANSITION ERROR:", str(exc))
+            return _callback_response(
+                False,
+                "MTN payment was verified but could not be applied to the order.",
+                reconciliation_required=True,
+            )
+
+        if not transition.get("processed"):
+            return _callback_response(
+                False,
+                "Verified MTN payment transition was not applied.",
+                reconciliation_required=True,
+            )
+
+        if not transition.get("newly_paid"):
+            return _callback_response(
+                True,
+                "Payment state was already processed.",
+                payment_status=transition.get("payment_status", "paid"),
+                reconciliation_required=bool(transition.get("reconciliation_required")),
+            )
 
         paid_at = utc_now()
 
-        update_response = (
-            supabase
-            .table("orders")
-            .update({
+        try:
+            _notify_success(order, provider_status, paid_at)
+        except Exception as exc:
+            print("MTN CALLBACK SUCCESS NOTIFICATION ERROR:", str(exc))
 
-                "payment_status":
-                    "paid",
-
-                "payment_method":
-                    "Mobile Money",
-
-                "paid_at":
-                    paid_at,
-
-            })
-            .eq(
-                "id",
-                order_id,
-            )
-            .execute()
+        return _callback_response(
+            True,
+            (
+                "Payment confirmed; manual reconciliation is required."
+                if transition.get("reconciliation_required")
+                else "Payment confirmed by MTN."
+            ),
+            payment_status="paid",
+            reconciliation_required=bool(transition.get("reconciliation_required")),
+            reconciliation_reason=transition.get("reconciliation_reason"),
         )
 
-        if not update_response.data:
-
-            print(
-                "MTN CALLBACK ERROR: "
-                "Order update failed."
+    if authoritative_status in {"FAILED", "REJECTED"}:
+        try:
+            transition = apply_collection_payment_result(
+                order,
+                provider_status,
+                admin,
+            )
+        except Exception as exc:
+            print("MTN CALLBACK FAILURE TRANSITION ERROR:", str(exc))
+            return _callback_response(
+                False,
+                "Verified MTN failure could not be applied to the order.",
+                reconciliation_required=True,
             )
 
-            return {
-                "received": True,
-                "processed": False,
-                "message": "Order update failed",
-            }
+        if not transition.get("processed"):
+            return _callback_response(
+                False,
+                "Verified MTN failure transition was not applied.",
+                reconciliation_required=True,
+            )
 
-        # ====================================================
-        # NOTIFICATIONS
-        # ====================================================
+        if not transition.get("newly_failed"):
+            return _callback_response(
+                True,
+                "Payment failure was already processed.",
+                payment_status=transition.get("payment_status", "failed"),
+                stock_released=bool(transition.get("stock_released")),
+                already_released=bool(transition.get("already_released")),
+            )
 
         try:
-
-            buyer_id = order.get(
-                "buyer_id"
-            )
-
-            seller_id = order.get(
-                "seller_id"
-            )
-
-            product_name = (
-                order.get("crop")
-                or "Marketplace product"
-            )
-
-            order_data = {
-
-                "event":
-                    "payment_successful",
-
-                "order_id":
-                    order_id,
-
-                "product_id":
-                    order.get(
-                        "product_id"
-                    ),
-
-                "product_name":
-                    product_name,
-
-                "quantity":
-                    order.get(
-                        "quantity"
-                    ),
-
-                "total_amount":
-                    order.get(
-                        "total_amount"
-                    ),
-
-                "payment_status":
-                    "paid",
-
-                "payment_method":
-                    "Mobile Money",
-
-                "paid_at":
-                    paid_at,
-
-                "mtn_status":
-                    mtn_status,
-
-                "financial_transaction_id":
-                    financial_transaction_id,
-
-            }
-
-            if buyer_id:
-
-                notify_buyer(
-
-                    buyer_id=buyer_id,
-
-                    notification_type="payment",
-
-                    title="Payment successful",
-
-                    message=(
-                        f"Your payment for "
-                        f"{product_name} was successful."
-                    ),
-
-                    data=order_data,
-                )
-
-            if seller_id:
-
-                notify_seller(
-
-                    seller_id=seller_id,
-
-                    notification_type="payment",
-
-                    title="Order payment received",
-
-                    message=(
-                        f"Payment has been received "
-                        f"for your {product_name} order."
-                    ),
-
-                    data=order_data,
-                )
-
-        except Exception as e:
-
-            print(
-                "MTN CALLBACK NOTIFICATION ERROR:",
-                str(e),
-            )
-
-        return {
-            "received": True,
-            "processed": True,
-            "payment_status": "paid",
-        }
-
-    # ========================================================
-    # FAILED / REJECTED
-    # ========================================================
-
-    if mtn_status in [
-        "FAILED",
-        "REJECTED",
-    ]:
-
-        try:
-
-            release_response = (
-                supabase
-                .rpc(
-                    "release_reserved_stock",
-                    {
-                        "p_order_id":
-                            order_id,
-
-                        "p_payment_status":
-                            "failed",
-                    },
-                )
-                .execute()
-            )
-
-        except Exception as e:
-
-            print(
-                "MTN CALLBACK STOCK RELEASE ERROR:",
-                str(e),
-            )
-
-            return {
-                "received": True,
-                "processed": False,
-                "message":
-                    "Payment failed but stock release failed",
-            }
-
-        if not release_response.data:
-
-            return {
-                "received": True,
-                "processed": False,
-                "message":
-                    "Payment failed but order update failed",
-            }
-
-        # ====================================================
-        # NOTIFICATIONS
-        # ====================================================
-
-        try:
-
-            buyer_id = order.get(
-                "buyer_id"
-            )
-
-            seller_id = order.get(
-                "seller_id"
-            )
-
-            product_name = (
-                order.get("crop")
-                or "Marketplace product"
-            )
-
-            notification_data = {
-
-                "event":
-                    "payment_failed",
-
-                "order_id":
-                    order_id,
-
-                "product_id":
-                    order.get(
-                        "product_id"
-                    ),
-
-                "product_name":
-                    product_name,
-
-                "order_status":
-                    "cancelled",
-
-                "payment_status":
-                    "failed",
-
-                "mtn_status":
-                    mtn_status,
-
-                "financial_transaction_id":
-                    financial_transaction_id,
-
-            }
-
-            if buyer_id:
-
-                notify_buyer(
-
-                    buyer_id=buyer_id,
-
-                    notification_type="payment",
-
-                    title="Payment failed",
-
-                    message=(
-                        f"Your payment for "
-                        f"{product_name} was not successful. "
-                        f"The order has been cancelled."
-                    ),
-
-                    data=notification_data,
-                )
-
-            if seller_id:
-
-                notify_seller(
-
-                    seller_id=seller_id,
-
-                    notification_type="order_status",
-
-                    title="Order cancelled",
-
-                    message=(
-                        f"The order for {product_name} "
-                        f"was cancelled because payment "
-                        f"was not successful."
-                    ),
-
-                    data=notification_data,
-                )
-
-        except Exception as e:
-
-            print(
-                "MTN CALLBACK FAILURE NOTIFICATION ERROR:",
-                str(e),
-            )
-
-        return {
-            "received": True,
-            "processed": True,
-            "payment_status": "failed",
-        }
-
-    # ========================================================
-    # UNKNOWN / PENDING
-    # ========================================================
-
-    return {
-        "received": True,
-        "processed": False,
-        "payment_status":
-            mtn_status or "PENDING",
-    }
+            _notify_failure(order, provider_status)
+        except Exception as exc:
+            print("MTN CALLBACK FAILURE NOTIFICATION ERROR:", str(exc))
+
+        return _callback_response(
+            True,
+            "Payment failure confirmed by MTN.",
+            payment_status="failed",
+            stock_released=bool(transition.get("stock_released")),
+            already_released=bool(transition.get("already_released")),
+        )
+
+    return _callback_response(
+        False,
+        "MTN payment is not in a final state.",
+        payment_status=authoritative_status or "PENDING",
+    )
