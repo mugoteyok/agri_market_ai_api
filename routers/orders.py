@@ -1,7 +1,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 
-from database import supabase
+from database import supabase, get_admin_supabase
 
 from auth import get_authenticated_user
 
@@ -61,7 +61,7 @@ def settle_order(order_id: str):
     try:
 
         response = (
-            supabase
+            get_admin_supabase()
             .rpc(
                 "settle_completed_order",
                 {
@@ -192,7 +192,7 @@ async def create_order(
     try:
 
         rpc_response = (
-            supabase
+            get_admin_supabase()
             .rpc(
                 "create_order_atomic",
                 {
