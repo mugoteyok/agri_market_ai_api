@@ -2613,6 +2613,11 @@ async def check_payment_status(
         ).upper()
     )
 
+    # Expose MTN diagnostic reason without returning the full provider response.
+    mtn_reason = (
+        str(mtn_status.get("reason") or "").strip()[:120] or None
+    )
+
     # ========================================================
     # SUCCESSFUL
     # ========================================================
@@ -2802,6 +2807,8 @@ async def check_payment_status(
             return {
                 "order_id": order_id,
                 "payment_status": transition.get("payment_status", "failed"),
+                "mtn_status": mtn_result,
+                "mtn_reason": mtn_reason,
                 "stock_released": stock_released,
                 "already_released": bool(transition.get("already_released")),
                 "message": "Payment failure was already processed.",
@@ -2916,6 +2923,9 @@ async def check_payment_status(
             "mtn_status":
                 mtn_result,
 
+            "mtn_reason":
+                mtn_reason,
+
             "stock_released":
                 stock_released,
 
@@ -2941,6 +2951,9 @@ async def check_payment_status(
         "mtn_status":
             mtn_result
             or "PENDING",
+
+        "mtn_reason":
+            mtn_reason,
 
         "stock_released":
             False,
